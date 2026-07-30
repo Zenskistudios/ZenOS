@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device, initial-scale=1.0">
+        <title>Zen - Mac OS</title>
+        <style>
+            *{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+                user-select: none;
+            }
+
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                overflow: hidden;
+                height: 100vh;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            }
+
+            .desktop {
+                position: relative;
+                width: 100%;
+                height: 100%;
+                background-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080"><rect width="1920" height="1080" fill="%23005AFF"/><rect x="0" y="600" width="1920" height="480" fill="%23003d99"/><circle cx="1200" cy="300" r="80" fill="%23FFD700" opacity="0.8"/><circle cx="1400" cy="180" r="60" fill="%23FFA500" opacity="0.6"/><circle cx="800" cy="250" r="50" fill="%23FF6347" opacity="0.7"/><rect x="0" y="800" width="1920" height="280" fill="%23002d66"/><rect x="200" y="750" width="100" height="150" fill="%23004d99"/><rect x="400" y="700" width="80" height="200" fill="%23003d77"/><rect x="600" y="780" width="120" height="120" fill="%23002d55"/></svg>');
+                background-size: cover;
+                background-position: center;
+            }
+
+            .menu-bar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 0;
+                background: rgba(255, 255, 255, 0.85);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                display: flex;
+                align-items: center;
+                padding: 0 10px;
+                z-index: 1000;
+                border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+            }
+            
+        </style>
+    </head>
+</html>
