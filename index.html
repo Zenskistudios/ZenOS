@@ -44,6 +44,53 @@
                 border-bottom: 1px solid rgba(0, 0, 0, 0.1);
             }
             
+            .menu-item {
+                padding: 4px 10px;
+                cursor: pointer;
+                font-size: 13px;
+                color: #333;
+                border-radius: 4px;
+                transition: all 0.2s;
+            }
+
+            .menu-item:hover {
+                background: rgba(0, 0, 0, 0.1);
+            }
+
+            .menu-dropdown {
+                position:absolute;
+                top: 28px;
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border: 1px solid rgba(0, 0, 0, 0.1);
+                border-radius: 6px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+                display: none;
+                min-width: 180px;   
+            }
+
+            .menu-dropdown.active {
+                display: block;
+            }
+
+            .menu-dropdown {
+                padding: 8px 20px;
+                font-size: 13px;
+                color: #333;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+
+            .menu-option:hover {
+                background: rgba(0, 0, 0, 0.1);
+            }
+
+            .menu-separator {
+                height: 1px;
+                background: rgba(0, 0, 0, 0.1);
+                margin: 4px 0;
+            }
         </style>
     </head>
 </html>
