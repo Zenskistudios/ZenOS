@@ -222,6 +222,62 @@
                 border-bottom: 1px solid #ddd;
                 gap: 10px;
             }
+
+            .finder-btn {
+                padding: 6px 12px;
+                background: white;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                font-size: 12px;
+                cursor: pointer;
+                transition: all 0.2s;
+            }
+
+            .finder-btn:hover {
+                background: #e8e8e8;
+                transform: translateY(-1px);
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            }
+
+            .finder-path {
+                flex: 1;
+                padding: 6px 10px;
+                background: white;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                font-size: 12px;
+                min-width: 300px;
+            }
+
+            .finder-sidebar {
+                width: 200px;
+                background: #f8f8f8;
+                border-right: 1px solid #ddd;
+                padding: 10px;
+            }
+
+            .favorite-item {
+                padding: 8px 12px;
+                margin: 2px 0;
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s;
+            }
+
+            .favorite-item:hover {
+                background: #e8e8e8;
+            }
+
+            .favorite-item.active {
+                background: #007aff;
+                color: white;
+            }
+
+            .finder-main {
+                flex: 1;
+                display: flex;
+                flex-direction:column;
+            }
         </style>
     </head>
 </html>
