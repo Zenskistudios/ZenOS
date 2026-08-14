@@ -1495,5 +1495,24 @@ webos@localhost:~$ <span class="terminal-input-line"><span class="terminal-promp
                 </div>
             </div>
         </div>
+         <!-- Preview Window -->
+        <div class="window" id="previewWindow" style="top: 100px; left: 200px; width: 800px; height: 600px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('preview')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('preview')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('preview')"></div>
+                </div>
+                <div class="window-title">Preview</div>
+            </div>
+            <div class="window-content">
+                <div style="display: flex; flex-direction: column; height: 100%;">
+                    <div class="finder-toolbar">
+                        <button class="finder-btn" onclick="previewOpen()">📁 Open</button>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
+                        <button class="finder-btn" onclick="previewZoomIn()">🔍+</button>
+                        <button class="finder-btn" onclick="previewZoomOut()">🔍-</button>
+                        <button class="finder-btn" onclick="previewFit()">Fit</button>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
     </body>
 </html>
