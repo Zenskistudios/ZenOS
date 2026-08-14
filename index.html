@@ -1471,5 +1471,29 @@ WebOS Notes v1.0</textarea>
                 </div>
             </div>
         </div>
+                <!-- Terminal Window -->
+        <div class="window" id="terminalWindow" style="top: 150px; left: 350px; width: 700px; height: 450px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('terminal')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('terminal')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('terminal')"></div>
+                </div>
+                <div class="window-title">Terminal</div>
+            </div>
+            <div class="window-content" style="padding: 0;">
+                <div class="terminal">
+                    <div class="terminal-header">bash — 80x24</div>
+                    <div class="terminal-body" id="terminalBody">
+Last login: Sun Nov 10 12:00:00 on console
+Welcome to WebOS Terminal!
+
+Type 'help' for available commands or explore the system.
+
+webos@localhost:~$ <span class="terminal-input-line"><span class="terminal-prompt"></span><input type="text" class="terminal-input" id="terminalInput" onkeypress="terminalKeyPress(event)"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
     </body>
 </html>
