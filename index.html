@@ -3,7 +3,7 @@
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device, initial-scale=1.0">
-        <title>Zen - Mac OS</title>
+        <title>☯️ - Zen OS</title>
         <style>
             *{
                 margin: 0;
@@ -710,6 +710,766 @@
             .preview-btn.play {
                 background: #007aff;
             }
+
+            .preferences-grid {
+                display: grid;
+                grid-template-columns: 200px 1fr;
+                height: 100%;
+            }
+
+            .prefs-sidebar {
+                background: #f5f5f5;
+                border-right: 1px solid #ddd;
+                padding: 20px 0;
+            }
+
+            .prefs-section {
+                padding: 12px 20px;
+                font-size: 13px;
+                color: #333;
+                cursor: pointer;
+                transition: all 0.2s;
+                border-left: 3px solid transparent;
+            }
+
+            prefs-section:hover {
+                background: #e8e8e8;
+            }
+
+            .prefs-section.active {
+                background: #007aff;
+                color: white;
+                border-left-color: #007aff;
+            }
+
+            .prefs-content {
+                padding: 30px;
+            }
+
+            .prefs-group {
+                margin-bottom: 25px;
+            }
+
+            .prefs-title {
+                font-size: 16px;
+                font-weight: 500;
+                color: #333;
+            }
+
+            .prefs-item {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 10px 0;
+                border-bottom: 1px solid #eee;
+            }
+
+            .prefs-label {
+                font-size: 13px;
+                color: #333;
+            }
+
+            .prefs-value {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+
+            .switch {
+                position: relative;
+                width: 50px;
+                height: 26px;
+                background: #ccc;
+                border-radius: 13px;
+                cursor: pointer;
+                transition: all 0.3s;
+            }
+
+            .switch.active {
+                background: #007aff;
+            }
+
+            .switch-slider {
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 20px;
+            height: 20px;
+            background: white;
+            border-radius: 50%;
+            transition: all 0.3s;
+            }
+
+            .switch.active .switch-slider {
+                transform: translateX(24px);
+            }
+
+            @keyframes fadeIn {
+                from {
+                    opacity: 0;
+                    transform: scale(0.9);
+                }
+                to {
+                    opacity: 1;
+                    transform: scale(1);
+                }
+            }
+
+            .window {
+                animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+
+            .desktop-time {
+                position: fixed;
+                top: 8px;
+                right: 15px;
+                font-size: 12px;
+                color: #333;
+                font-weight: 500;
+            }
+
+            .desktop-widget {
+            position: fixed;
+            top: 40px;
+            right: 15px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            font-size: 13px;
+            min-width: 150px;
+            }
+
+            .weather-info {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 5px;
+            }
+
+            .weather-icon {
+                font-size: 24px;
+            }
+
+            .weather-temp {
+                font-weight: 500;
+                font-size: 16px;
+            }
+
+            .notification {
+                position: fixed;
+                top: 40px;
+                right: -300px;
+                width: 300px;
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border-radius: 12px;
+                padding: 15px;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+                transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                z-index: 2000;
+            }
+
+            .notification.show {
+                right: 20px;
+            }
+
+            .notification-title {
+                font-size: 12px;
+                color: #666;
+            }
+
+            .spotlight {
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%) scale(0);
+                width: 600px;
+                background: rgba(0, 0, 0, 0.9);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border-radius: 12px;
+                padding: 20px;
+                z-index: 2000;
+                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+
+            .spotlight.active {
+                transform: translate(-50%, -50%) scale(1);
+            }
+
+            .spotlight-search {
+                width: 100%;
+                padding: 15px;
+                font-size: 16px;
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 8px;
+                color: white;
+                outline: none;
+            }
+
+            .spotlight-search::placeholder {
+                color: rgba(255, 255, 255, 0.5);
+            }
+
+            .spotlight-results {
+                margin-top: 10px;
+                max-height: 300px;
+                overflow: auto;
+            }
+
+            .spotlight-item {
+                padding: 10px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s;
+                color: white;
+            }
+
+            .spotlight-item:hover {
+                background: rgba(255, 255, 255, 0.1);
+            }
+
+            .spotlight-icon {
+                font-size: 20px;
+            }
         </style>
     </head>
+    <body>
+    <div class="desktop" id="desktop">
+        <div class="menu-bar">
+            <div class="menu-item" onclick="toggleMenu('appleMenu')">🍎</div>
+            <div class="menu-dropdown" id="appleMenu">
+                <div class="menu-option" onclick="showNotification('About This Mac', 'WebOS Version 1.0')">About This Mac</div>
+                <div class="menu-separator"></div>
+                <div class="menu-option" onclick="openApp('finder')">Finder</div>
+                <div class="menu-option" onclick="openApp('textedit')">TextEdit</div>
+                <div class="menu-option" onclick="openApp('notes')">Notes</div>
+                <div class="menu-option" onclick="openApp('paint')">Paint</div>
+                <div class="menu-option" onclick="openApp('calculator')">Calculator</div>
+                <div class="menu-option" onclick="openApp('calendar')">Calendar</div>
+                <div class="menu-option" onclick="openApp('videoEditor')">Video Editor</div>
+                <div class="menu-option" onclick="openApp('preferences')">System Preferences</div>
+                <div class="menu-separator"></div>
+                <div class="menu-option" onclick="activateSpotlight()">Spotlight</div>
+                <div class="menu-option" onclick="showNotification('Shut Down', 'System shutting down...')">Shut Down</div>
+            </div>
+
+            <div class="menu-item" onclick="toggleMenu('fileMenu')">File</div>
+            <div class="menu-dropdown" id="fileMenu">
+                <div class="menu-option" onclick="showNotification('New File', 'Creating new file...')">New File</div>
+                <div class="menu-option" onclick="showNotification('Open', 'Opening file...')">Open</div>
+                <div class="menu-option" onclick="showNotification('Save', 'Saving file...')">Save</div>
+                <div class="menu-separator"></div>
+                <div class="menu-option" onclick="showNotification('Print', 'Preparing to print...')">Print</div>
+            </div>
+
+            <div class="menu-item" onclick="toggleMenu('editMenu')">Edit</div>
+            <div class="menu-dropdown" id="editMenu">
+                <div class="menu-option" onclick="showNotification('Undo', 'Undo last action')">Undo</div>
+                <div class="menu-option" onclick="showNotification('Redo', 'Redo last action')">Redo</div>
+                <div class="menu-separator"></div>
+                <div class="menu-option" onclick="showNotification('Copy', 'Copied to clipboard')">Copy</div>
+                <div class="menu-option" onclick="showNotification('Paste', 'Pasted from clipboard')">Paste</div>
+                <div class="menu-option" onclick="showNotification('Cut', 'Cut to clipboard')">Cut</div>
+                <div class="menu-separator"></div>
+                <div class="menu-option" onclick="showNotification('Select All', 'Everything selected')">Select All</div>
+            </div>
+
+            <div class="menu-item" onclick="toggleMenu('viewMenu')">View</div>
+            <div class="menu-dropdown" id="viewMenu">
+                <div class="menu-option" onclick="showNotification('Zoom In', 'Zooming in...')">Zoom In</div>
+                <div class="menu-option" onclick="showNotification('Zoom Out', 'Zooming out...')">Zoom Out</div>
+                <div class="menu-separator"></div>
+                <div class="menu-option" onclick="showNotification('Full Screen', 'Entering full screen mode')">Full Screen</div>
+            </div>
+
+            <div class="menu-item" onclick="toggleMenu('windowMenu')">Window</div>
+            <div class="menu-dropdown" id="windowMenu">
+                <div class="menu-option" onclick="minimizeAllWindows()">Minimize All</div>
+                <div class="menu-option" onclick="showAllWindows()">Show All</div>
+                <div class="menu-separator"></div>
+                <div class="menu-option" onclick="showNotification('Arrange in Front', 'Windows arranged')">Arrange in Front</div>
+            </div>
+
+            <div class="menu-item" onclick="toggleMenu('helpMenu')">Help</div>
+            <div class="menu-dropdown" id="helpMenu">
+                <div class="menu-option" onclick="showNotification('WebOS Help', 'Opening help documentation...')">WebOS Help</div>
+                <div class="menu-option" onclick="showNotification('Keyboard Shortcuts', 'Displaying shortcuts...')">Keyboard Shortcuts</div>
+                <div class="menu-separator"></div>
+                <div class="menu-option" onclick="showNotification('About WebOS', 'WebOS Version 1.0 Built with HTML5')">About WebOS</div>
+            </div>
+
+            <div class="desktop-time" id="desktopTime">12:00 AM</div>
+        </div>
+
+        <div class="desktop-widget">
+            <div class="weather-info">
+                <span class="weather-icon">☀️</span>
+                <span class="weather-temp">72°F</span>
+            </div>
+            <div style="font-size: 11px; color: #666;">San Francisco</div>
+            <div style="font-size: 10px; color: #999; margin-top: 3px;">Sunny</div>
+        </div>
+
+        <div class="dock">
+    <div class="dock-item" onclick="openApp('finder')" title="Finder">
+        <span class="dock-icon">🗂️</span>
+    </div>
+    <div class="dock-item" onclick="openApp('textedit')" title="TextEdit">
+        <span class="dock-icon">📝</span>
+    </div>
+    <div class="dock-item" onclick="openApp('notes')" title="Notes">
+        <span class="dock-item">📋</span>
+    </div>
+    <div class="dock-item" onclick="openApp('paint')" title="Paint">
+        <span class="dock-item">🎨</span>
+    </div>
+    <div class="dock-item" onclick="openApp('calculator')" title="Calculator">
+        <span class="dock-item">🔢</span>
+    </div>
+    <div class="dock-item" onclick="openApp('calender')" title="Calender">
+        <span class="dock-item">📅</span>
+    </div>
+    <div class="dock-item" onclick="openApp('videoEditor')" title="Video Editor">
+        <span class="dock-item">🎬</span>
+    </div>
+    <div class="dock-item" onclick="openApp('preferences')" title="System Preferences">
+        <span class="dock-item">⚙️</span>
+    </div>
+    <div class="dock-item" onclick="openApp('terminal')" title="Terminal">
+        <span class="dock-item">💻</span>
+    </div>
+    <div class="dock-item" onclick="openApp('preview')" title="Perview">
+        <span class="dock-icon">🖼️</span>
+    </div>
+</div>>
+
+        <!-- Finder Window -->
+        <div class="window active" id="finderWindow" style="top: 50px; left: 50px; width: 900px; height: 600px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('finder')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('finder')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('finder')"></div>
+                </div>
+                <div class="window-title">Finder</div>
+            </div>
+            <div class="window-content">
+                <div class="finder">
+                    <div class="finder-toolbar">
+                        <button class="finder-btn" onclick="finderNavigateBack()">←</button>
+                        <button class="finder-btn" onclick="finderNavigateForward()">→</button>
+                        <button class="finder-btn" onclick="finderNavigateUp()">↑</button>
+                        <input class="finder-path" value="/Users/WebOS/Desktop" onchange="finderNavigateToPath(this.value)">
+                        <button class="finder-btn" onclick="finderCreateFolder()">+ Folder</button>
+                        <button class="finder-btn" onclick="finderChangeView()">Grid</button>
+                    </div>
+                    <div style="display: flex; height: calc(100% - 50px);">
+                        <div class="finder-sidebar">
+                            <div class="favorites-item active" onclick="finderSelectFavorite(this, 'desktop')">📁 Desktop</div>
+                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'documents')">📄 Documents</div>
+                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'downloads')">⬇️ Downloads</div>
+                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'pictures')">🖼️ Pictures</div>
+                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'movies')">🎬 Movies</div>
+                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'music')">🎵 Music</div>
+                            <div class="menu-separator" style="margin: 10px 0;"></div>
+                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'applications')">💼 Applications</div>
+                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'utilities')">🔧 Utilities</div>
+                        </div>
+                        <div class="finder-main">
+                            <div class="finder-grid" id="finderGrid">
+                                <div class="file-item" onclick="finderSelectFile(this)">
+                                    <span class="file-icon">📄</span>
+                                    <span class="file-name">Document.txt</span>
+                                </div>
+                                <div class="file-item" onclick="finderSelectFile(this)">
+                                    <span class="file-icon">🖼️</span>
+                                    <span class="file-name">Picture.jpg</span>
+                                </div>
+                                <div class="file-item" onclick="finderSelectFile(this)">
+                                    <span class="file-icon">🎬</span>
+                                    <span class="file-name">Video.mp4</span>
+                                </div>
+                                <div class="file-item" onclick="finderSelectFile(this)">
+                                    <span class="file-icon">📁</span>
+                                    <span class="file-name">Projects</span>
+                                </div>
+                                <div class="file-item" onclick="finderSelectFile(this)">
+                                    <span class="file-icon">🎵</span>
+                                    <span class="file-name">Music.mp3</span>
+                                </div>
+                                <div class="file-item" onclick="finderSelectFile(this)">
+                                    <span class="file-icon">📊</span>
+                                    <span class="file-name">Spreadsheet.xlsx</span>
+                                </div>
+                                <div class="file-item" onclick="finderSelectFile(this)">
+                                    <span class="file-icon">📦</span>
+                                    <span class="file-name">Archive.zip</span>
+                                </div>
+                                <div class="file-item" onclick="finderSelectFile(this)">
+                                    <span class="file-icon">🔗</span>
+                                    <span class="file-name">Link.url</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+            <!-- TextEdit Window -->
+        <div class="window" id="texteditWindow" style="top: 80px; left: 150px; width: 700px; height: 500px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('textedit')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('textedit')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('textedit')"></div>
+                </div>
+                <div class="window-title">TextEdit</div>
+            </div>
+            <div class="window-content">
+                <div class="text-editor">
+                    <div class="text-toolbar">
+                        <button class="toolbar-btn" onclick="textBold()">B</button>
+                        <button class="toolbar-btn" onclick="textItalic()">I</button>
+                        <button class="toolbar-btn" onclick="textUnderline()">U</button>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
+                        <button class="toolbar-btn" onclick="textAlign('left')">⬅</button>
+                        <button class="toolbar-btn" onclick="textAlign('center')">⬌</button>
+                        <button class="toolbar-btn" onclick="textAlign('right')">➡</button>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
+                        <input type="color" id="textColor" style="width: 30px; height: 25px; border: 1px solid #ccc; cursor: pointer;" onchange="textChangeColor(this.value)">
+                        <select id="fontSize" onchange="textChangeSize(this.value)" style="padding: 4px; border: 1px solid #ccc;">
+                            <option value="12px">12px</option>
+                            <option value="14px" selected>14px</option>
+                            <option value="16px">16px</option>
+                            <option value="18px">18px</option>
+                            <option value="24px">24px</option>
+                        </select>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
+                        <button class="toolbar-btn" onclick="textSave()">💾 Save</button>
+                        <button class="toolbar-btn" onclick="textOpen()">📁 Open</button>
+                    </div>
+                    <div contenteditable="true" class="text-content" id="textContent">
+Welcome to WebOS TextEdit!
+
+This is a rich text editor with formatting capabilities. You can:
+
+• Make text **bold**, *italic*, or <u>underlined</u>
+• Change text color and size
+• Align text to the left, center, or right
+• Save and open documents
+
+Try editing this text to see how it works! The webOS experience brings you all the powerful features you'd expect from a Mac OS text editor.
+
+Start typing your masterpiece today...
+
+---
+WebOS TextEdit
+                    </div>
+                </div>
+            </div>
+        </div>
+
+         <!-- Notes Window -->
+        <div class="window" id="notesWindow" style="top: 100px; left: 200px; width: 500px; height: 600px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('notes')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('notes')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('notes')"></div>
+                </div>
+                <div class="window-title">Notes</div>
+            </div>
+            <div class="window-content">
+                <div class="notes-editor">
+                    <div class="notes-header">
+                        <input type="text" class="notes-title" id="notesTitle" value="Welcome to Notes" placeholder="Note Title">
+                    </div>
+                    <textarea class="notes-content" id="notesContent" placeholder="Start typing your note here...">
+
+This is your personal notes application in WebOS!
+
+Features:
+• Rich text formatting
+• Auto-save functionality
+• Search through notes
+• Organize with folders
+• Sync across devices (simulated)
+
+Tips:
+• Use the title field to organize your notes
+• Notes are automatically saved
+• Try creating multiple notes for different topics
+• Use folders to categorize your thoughts
+
+Happy note-taking!
+
+---
+WebOS Notes v1.0</textarea>
+                </div>
+            </div>
+        </div>
+
+               <!-- Paint Window -->
+        <div class="window" id="paintWindow" style="top: 120px; left: 250px; width: 800px; height: 600px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('paint')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('paint')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('paint')"></div>
+                </div>
+                <div class="window-title">Paint</div>
+            </div>
+            <div class="window-content">
+                <div class="paint-container">
+                    <div class="paint-toolbar">
+                        <button class="tool-btn active" onclick="paintSelectTool('brush')">🖌️ Brush</button>
+                        <button class="tool-btn" onclick="paintSelectTool('eraser')">🧹 Eraser</button>
+                        <button class="tool-btn" onclick="paintSelectTool('line')">📏 Line</button>
+                        <button class="tool-btn" onclick="paintSelectTool('rectangle')">▭ Rectangle</button>
+                        <button class="tool-btn" onclick="paintSelectTool('circle')">⭕ Circle</button>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
+                        <input type="color" class="color-picker" id="paintColor" value="#000000" onchange="paintChangeColor(this.value)">
+                        <select id="brushSize" onchange="paintChangeSize(this.value)" style="padding: 4px; border: 1px solid #ccc;">
+                            <option value="2">Thin</option>
+                            <option value="5" selected>Medium</option>
+                            <option value="10">Thick</option>
+                            <option value="20">Extra Thick</option>
+                        </select>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
+                        <button class="tool-btn" onclick="paintClear()">🗑️ Clear</button>
+                        <button class="tool-btn" onclick="paintSave()">💾 Save</button>
+                    </div>
+                    <canvas class="paint-canvas" id="paintCanvas" width="800" height="450"></canvas>
+                </div>
+            </div>
+        </div>
+
+               <!-- Calculator Window -->
+        <div class="window" id="calculatorWindow" style="top: 200px; left: 400px; width: 320px; height: 480px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('calculator')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('calculator')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('calculator')"></div>
+                </div>
+                <div class="window-title">Calculator</div>
+            </div>
+            <div class="window-content" style="padding: 0;">
+                <div class="calculator-display" id="calcDisplay">0</div>
+                <div class="calculator-buttons">
+                    <button class="calc-btn" onclick="calcClear()">AC</button>
+                    <button class="calc-btn" onclick="calcClearEntry()">C</button>
+                    <button class="calc-btn" onclick="calcPercent()">%</button>
+                    <button class="calc-btn operation" onclick="calcDivide()">÷</button>
+
+                    <button class="calc-btn" onclick="calcNumber('7')">7</button>
+                    <button class="calc-btn" onclick="calcNumber('8')">8</button>
+                    <button class="calc-btn" onclick="calcNumber('9')">9</button>
+                    <button class="calc-btn operation" onclick="calcMultiply()">×</button>
+
+                    <button class="calc-btn" onclick="calcNumber('4')">4</button>
+                    <button class="calc-btn" onclick="calcNumber('5')">5</button>
+                    <button class="calc-btn" onclick="calcNumber('6')">6</button>
+                    <button class="calc-btn operation" onclick="calcSubtract()">−</button>
+
+                    <button class="calc-btn" onclick="calcNumber('1')">1</button>
+                    <button class="calc-btn" onclick="calcNumber('2')">2</button>
+                    <button class="calc-btn" onclick="calcNumber('3')">3</button>
+                    <button class="calc-btn operation" onclick="calcAdd()">+</button>
+
+                    <button class="calc-btn" onclick="calcNumber('0')">0</button>
+                    <button class="calc-btn" onclick="calcDecimal()">.</button>
+                    <button class="calc-btn equals" onclick="calcEquals()">=</button>
+                </div>
+            </div>
+        </div>
+
+         <!-- Calendar Window -->
+        <div class="window" id="calendarWindow" style="top: 80px; left: 300px; width: 800px; height: 600px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('calendar')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('calendar')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('calendar')"></div>
+                </div>
+                <div class="window-title">Calendar</div>
+            </div>
+            <div class="window-content" style="padding: 0;">
+                <div class="calendar-header">
+                    <button class="finder-btn" onclick="calendarPreviousMonth()">←</button>
+                    <h3 id="calendarMonthYear" style="margin: 0; font-size: 16px;">November 2024</h3>
+                    <button class="finder-btn" onclick="calendarNextMonth()">→</button>
+                </div>
+                <div class="calendar-view" id="calendarView">
+                    <div class="calendar-day-header">Sun</div>
+                    <div class="calendar-day-header">Mon</div>
+                    <div class="calendar-day-header">Tue</div>
+                    <div class="calendar-day-header">Wed</div>
+                    <div class="calendar-day-header">Thu</div>
+                    <div class="calendar-day-header">Fri</div>
+                    <div class="calendar-day-header">Sat</div>
+                </div>
+            </div>
+        </div>
+
+         <!-- Video Editor Window -->
+        <div class="window" id="videoEditorWindow" style="top: 50px; left: 100px; width: 1000px; height: 700px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('videoEditor')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('videoEditor')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('videoEditor')"></div>
+                </div>
+                <div class="window-title">Video Editor Pro</div>
+            </div>
+            <div class="window-content">
+                <div class="video-editor">
+                    <div class="video-toolbar">
+                        <button class="finder-btn" onclick="videoNewProject()">📁 New</button>
+                        <button class="finder-btn" onclick="videoImport()">📥 Import</button>
+                        <button class="finder-btn" onclick="videoExport()">📤 Export</button>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
+                        <button class="finder-btn" onclick="videoCut()">✂️ Cut</button>
+                        <button class="finder-btn" onclick="videoCopy()">📋 Copy</button>
+                        <button class="finder-btn" onclick="videoPaste()">📋 Paste</button>
+                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
+                        <button class="finder-btn" onclick="videoAddTransition()">⚡ Transition</button>
+                        <button class="finder-btn" onclick="videoAddText()">📝 Text</button>
+                        <button class="finder-btn" onclick="videoAddEffect()">✨ Effects</button>
+                    </div>
+                    <div class="video-preview">
+                        <div class="video-placeholder">
+                            <div style="text-align: center;">
+                                <div style="font-size: 48px; margin-bottom: 10px;">🎬</div>
+                                <div>Video Preview Area</div>
+                                <div style="font-size: 14px; margin-top: 5px; opacity: 0.8;">Import videos to start editing</div>
+                            </div>
+                        </div>
+                        <div class="preview-controls">
+                            <button class="preview-btn" onclick="videoPlay()">▶</button>
+                            <button class="preview-btn" onclick="videoPause()">⏸</button>
+                            <button class="preview-btn" onclick="videoStop()">⏹</button>
+                        </div>
+                    </div>
+                    <div class="video-timeline">
+                        <div class="timeline-ruler" id="timelineRuler">
+                            <span>00:00</span>
+                            <span style="margin-left: 100px;">00:05</span>
+                            <span style="margin-left: 100px;">00:10</span>
+                            <span style="margin-left: 100px;">00:15</span>
+                            <span style="margin-left: 100px;">00:20</span>
+                        </div>
+                        <div class="timeline-tracks" id="timelineTracks">
+                            <div class="timeline-track" onclick="selectTimelineTrack(this)">Clip 1</div>
+                            <div class="timeline-track" onclick="selectTimelineTrack(this)">Clip 2</div>
+                            <div class="timeline-track" onclick="selectTimelineTrack(this)">Audio</div>
+                            <div class="timeline-track" onclick="selectTimelineTrack(this)">Effects</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+                <!-- System Preferences Window -->
+        <div class="window" id="preferencesWindow" style="top: 60px; left: 150px; width: 800px; height: 600px;">
+            <div class="window-header">
+                <div class="window-controls">
+                    <div class="window-control close" onclick="closeApp('preferences')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('preferences')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('preferences')"></div>
+                </div>
+                <div class="window-title">System Preferences</div>
+            </div>
+            <div class="window-content">
+                <div class="preferences-grid">
+                    <div class="prefs-sidebar">
+                        <div class="prefs-section active" onclick="selectPrefsSection(this)">General</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Desktop & Screen Saver</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Dock</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Keyboard</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Mouse</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Sound</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Displays</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Network</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Security & Privacy</div>
+                        <div class="prefs-section" onclick="selectPrefsSection(this)">Users & Groups</div>
+                    </div>
+                    <div class="prefs-content" id="prefsContent">
+                        <div class="prefs-group">
+                            <div class="prefs-title">Appearance</div>
+                            <div class="prefs-item">
+                                <span class="prefs-label">Dark Mode</span>
+                                <div class="prefs-value">
+                                    <div class="switch" onclick="toggleSwitch(this)">
+                                        <div class="switch-slider"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="prefs-item">
+                                <span class="prefs-label">Accent Color</span>
+                                <div class="prefs-value">
+                                    <select style="padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                                        <option>Blue</option>
+                                        <option>Green</option>
+                                        <option>Purple</option>
+                                        <option>Pink</option>
+                                        <option>Orange</option>
+                                        <option>Red</option>
+                                        <option>Yellow</option>
+                                        <option>Graphite</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="prefs-group">
+                            <div class="prefs-title">System Settings</div>
+                            <div class="prefs-item">
+                                <span class="prefs-label">Show notification center</span>
+                                <div class="prefs-value">
+                                    <div class="switch active" onclick="toggleSwitch(this)">
+                                        <div class="switch-slider"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="prefs-item">
+                                <span class="prefs-label">Play sound effects</span>
+                                <div class="prefs-value">
+                                    <div class="switch active" onclick="toggleSwitch(this)">
+                                        <div class="switch-slider"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="prefs-group">
+                            <div class="prefs-title">Performance</div>
+                            <div class="prefs-item">
+                                <span class="prefs-label">Reduce motion</span>
+                                <div class="prefs-value">
+                                    <div class="switch" onclick="toggleSwitch(this)">
+                                        <div class="switch-slider"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="prefs-item">
+                                <span class="prefs-label">Reduce transparency</span>
+                                <div class="prefs-value">
+                                    <div class="switch" onclick="toggleSwitch(this)">
+                                        <div class="switch-slider"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
 </html>
