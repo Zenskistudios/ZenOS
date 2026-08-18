@@ -1,63 +1,89 @@
 # ZenOS
 
-> A browser-based desktop environment built from scratch.
+ZenOS is a WebOS-style desktop environment that I'm building from
+scratch to experiment with what an operating system could feel like
+inside a browser.
 
-ZenOS is an experimental WebOS-style desktop environment designed to
-provide a complete, interactive operating-system experience inside the
-browser.
+This is a long-term project and the current version is still being
+worked on.
 
-The project is being rebuilt from scratch as the final version.
+## What I'm building
 
-## Vision
+The main idea is to create a browser-based desktop where I can open
+different applications, move windows around, customize the system,
+manage files, and eventually interact with the system through an AI
+assistant called Zen.
 
-ZenOS aims to provide:
+Some of the things I want ZenOS to have are:
 
-- A complete desktop environment
-- A modular Window Manager
-- An Application Manager
-- Persistent files and application data
-- Customizable desktop and themes
-- Built-in productivity applications
-- Terminal and developer tools
-- Media integrations
+- Desktop and dock
+- Window management
+- Applications
+- File management
+- Settings and customization
+- Terminal
+- Notes and tasks
+- Calculator
+- Media apps
 - Games
-- Device integration where browser APIs and permissions allow
-- A backend for online services
-- An integrated AI assistant called Zen
+- AI assistant
+- Device connections
+- Backend services
 
-## Development Philosophy
+## Starting from scratch
 
-ZenOS is a new implementation.
+ZenOS is not a direct continuation of my old code.
 
-Previous versions are references rather than codebases to merge.
+I have previous versions of the project that I use to see what worked,
+what didn't work, and what features are worth bringing into the new
+version.
 
-- V1 → feature and experimentation reference
-- V2 → UI/UX and design reference
-- J.A.R.V.I.S.-OS → inspiration and architectural research
-- ZenOS → new architecture and new implementation
+V1 is mainly useful for the features and ideas I experimented with.
 
-Features from previous versions may be redesigned and reimplemented,
-but their existing implementation will not be directly merged into ZenOS.
+V2 helped me explore the UI and the overall desktop experience.
 
-## Core Architecture
+I'm also taking some inspiration from projects such as J.A.R.V.I.S.-OS
+while designing my own system.
 
-ZenOS will be organized around several core systems:
+The final ZenOS code is being written separately instead of merging the
+old codebases together.
+
+## How I want ZenOS to work
+
+One of the biggest things I want to improve is how the different parts
+of the system communicate.
+
+For example, if I tell Zen:
+
+> Open Terminal
+
+Zen should be able to ask the ZenOS application system to open
+Terminal, and the Window Manager should handle displaying and focusing
+the window.
+
+This means applications won't have to manage the whole desktop
+themselves.
+
+The main systems I'm currently planning are:
 
 - Window Manager
 - Application Manager
-- Storage / File System
-- Settings Manager
-- Permission Manager
+- Storage
+- Settings
+- Permissions
 - Device Manager
-- Event System
+- Event system
 - Zen AI
-- Backend Services
+- Backend
 
-## Planned Applications
+## Apps
 
-### Core
+I don't want every application to be built at once. I'll add them as
+the core of ZenOS becomes stable.
 
-- File Manager
+### Core apps
+
+- Files
 - Terminal
 - Settings
 
@@ -72,7 +98,7 @@ ZenOS will be organized around several core systems:
 ### Media
 
 - YouTube
-- Music / Spotify integration
+- Music / Spotify
 - Gallery
 - Video Player
 
@@ -81,21 +107,34 @@ ZenOS will be organized around several core systems:
 - Paint
 - Video Editor
 
-### Entertainment
+### Games
 
 - Game Hub
-- ZenOS Games
+- ZenOS games
 
-### AI
+## Zen
 
-- Zen Assistant
+Zen is the AI assistant I'm planning to build into ZenOS.
 
-## Device Integration
+The goal is for Zen to be more than a chat box. I want it to eventually
+be able to interact with parts of the operating environment through
+specific system functions.
 
-ZenOS will use supported browser APIs and explicit user permissions
-to interact with the user's device.
+For example:
 
-Potential integrations include:
+> "Zen, open Settings."
+
+Zen would send the request to the ZenOS application system, which would
+open Settings through the Window Manager.
+
+I'm still working out exactly how the AI and system will communicate.
+
+## Devices
+
+I also want ZenOS to interact with the device it's running on where
+the browser allows it.
+
+Some of the areas I'm experimenting with include:
 
 - Bluetooth
 - Audio
@@ -107,65 +146,54 @@ Potential integrations include:
 - Game controllers
 - Fullscreen
 
-Unsupported capabilities must have graceful fallbacks.
-
-## Zen AI
-
-Zen is the integrated AI assistant for ZenOS.
-
-Zen will eventually interact with the operating environment through
-controlled ZenOS system APIs.
-
-Example:
-
-User:
-> Zen, open Terminal.
-
-Zen:
-> Calls the ZenOS application API.
-
-Application Manager:
-> Launches Terminal.
-
-Window Manager:
-> Creates and focuses the Terminal window.
-
-Zen should not directly manipulate arbitrary application DOM elements.
+Some of these features depend on browser support and user permissions,
+so they may not work on every device.
 
 ## Backend
 
-The backend will eventually provide services such as:
+A backend will be added as the project grows.
 
-- AI gateway
-- Authentication
-- Cloud synchronization
-- User data
+Possible backend features include:
+
+- AI requests
+- User accounts
+- Cloud storage
+- Synchronization
 - Database services
-- API services
+- Other online services
 
-ZenOS should retain useful local functionality when backend services
-are unavailable.
+The goal is to keep basic parts of ZenOS usable locally even when an
+online service isn't available.
 
-## Development Roadmap
+## Development plan
+
+I'm building this in stages rather than trying to build everything
+at once.
+
+Current plan:
 
 1. Project foundation
-2. ZenOS Core
+2. ZenOS core
 3. Window Manager
-4. Desktop Environment
+4. Desktop
 5. Application Manager
-6. Storage / File System
-7. Core Applications
+6. Storage
+7. Core apps
 8. Customization
-9. Media and Games
-10. Device Integration
+9. Media and games
+10. Device features
 11. Backend
 12. Zen AI
-13. Testing
-14. Performance Optimization
-15. Final UI/UX Polish
+13. Testing and optimization
+14. Final UI polish
+
+The order can change as I build and discover what needs to be changed.
 
 ## Status
 
-🚧 Active development
+🚧 **Work in progress**
 
-ZenOS is currently being rebuilt from scratch.
+ZenOS is still being actively developed.
+
+This is not the final version yet. The architecture, UI, and features
+will continue to change as I build and test the system.
