@@ -3,17 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<<<<<<< HEAD
+    <title>ZenOS</title>
+=======
     <title>ZenOS - Mac OS Experience</title>
+>>>>>>> 9573f778bd42ba404ac44f77530e319de504c161
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div class="desktop" id="desktop">
+        <!-- Menu Bar -->
         <div class="menu-bar">
             <div class="menu-item" onclick="toggleMenu('appleMenu')">☯️</div>
             <div class="menu-dropdown" id="appleMenu">
-                <div class="menu-option" onclick="showNotification('About This Mac', 'WebOS Version 1.0')">About This Mac</div>
+                <div class="menu-option" onclick="showNotification('About ZenOS', 'ZenOS — Browser Desktop Environment')">About ZenOS</div>
                 <div class="menu-separator"></div>
-                <div class="menu-option" onclick="openApp('finder')">Finder</div>
+                <div class="menu-option" onclick="openApp('zen')">Zen</div>
                 <div class="menu-option" onclick="openApp('textedit')">TextEdit</div>
                 <div class="menu-option" onclick="openApp('notes')">Notes</div>
                 <div class="menu-option" onclick="openApp('paint')">Paint</div>
@@ -43,8 +48,6 @@
                 <div class="menu-option" onclick="showNotification('Copy', 'Copied to clipboard')">Copy</div>
                 <div class="menu-option" onclick="showNotification('Paste', 'Pasted from clipboard')">Paste</div>
                 <div class="menu-option" onclick="showNotification('Cut', 'Cut to clipboard')">Cut</div>
-                <div class="menu-separator"></div>
-                <div class="menu-option" onclick="showNotification('Select All', 'Everything selected')">Select All</div>
             </div>
 
             <div class="menu-item" onclick="toggleMenu('viewMenu')">View</div>
@@ -59,21 +62,18 @@
             <div class="menu-dropdown" id="windowMenu">
                 <div class="menu-option" onclick="minimizeAllWindows()">Minimize All</div>
                 <div class="menu-option" onclick="showAllWindows()">Show All</div>
-                <div class="menu-separator"></div>
-                <div class="menu-option" onclick="showNotification('Arrange in Front', 'Windows arranged')">Arrange in Front</div>
             </div>
 
             <div class="menu-item" onclick="toggleMenu('helpMenu')">Help</div>
             <div class="menu-dropdown" id="helpMenu">
-                <div class="menu-option" onclick="showNotification('WebOS Help', 'Opening help documentation...')">WebOS Help</div>
-                <div class="menu-option" onclick="showNotification('Keyboard Shortcuts', 'Displaying shortcuts...')">Keyboard Shortcuts</div>
-                <div class="menu-separator"></div>
-                <div class="menu-option" onclick="showNotification('About WebOS', 'WebOS Version 1.0 Built with HTML5')">About WebOS</div>
+                <div class="menu-option" onclick="showNotification('ZenOS Help', 'Opening help...')">ZenOS Help</div>
+                <div class="menu-option" onclick="showNotification('About ZenOS', 'ZenOS — Work in progress')">About ZenOS</div>
             </div>
 
             <div class="desktop-time" id="desktopTime">12:00 AM</div>
         </div>
 
+        <!-- Weather widget -->
         <div class="desktop-widget">
             <div class="weather-info">
                 <span class="weather-icon">☀️</span>
@@ -83,9 +83,10 @@
             <div style="font-size: 10px; color: #999; margin-top: 3px;">Sunny</div>
         </div>
 
+        <!-- Dock -->
         <div class="dock">
-            <div class="dock-item" data-app="finder" onclick="openApp('finder')" title="Finder">
-                <span class="dock-icon">🗂️</span>
+            <div class="dock-item" data-app="zen" onclick="openApp('zen')" title="Zen">
+                <span class="dock-icon">☯️</span>
             </div>
             <div class="dock-item" data-app="textedit" onclick="openApp('textedit')" title="TextEdit">
                 <span class="dock-icon">📝</span>
@@ -116,78 +117,43 @@
             </div>
         </div>
 
-        <div class="window active" id="finderWindow" style="top: 50px; left: 50px; width: 900px; height: 600px;">
+        <!-- ========== ZEN WINDOW (replaces Finder) ========== -->
+        <div class="window" id="zenWindow" style="top: 80px; left: 120px; width: 480px; height: 620px;">
             <div class="window-header">
                 <div class="window-controls">
-                    <div class="window-control close" onclick="closeApp('finder')"></div>
-                    <div class="window-control minimize" onclick="minimizeApp('finder')"></div>
-                    <div class="window-control maximize" onclick="maximizeApp('finder')"></div>
+                    <div class="window-control close" onclick="closeApp('zen')"></div>
+                    <div class="window-control minimize" onclick="minimizeApp('zen')"></div>
+                    <div class="window-control maximize" onclick="maximizeApp('zen')"></div>
                 </div>
-                <div class="window-title">Finder</div>
+                <div class="window-title">Zen</div>
             </div>
-            <div class="window-content">
-                <div class="finder">
-                    <div class="finder-toolbar">
-                        <button class="finder-btn" onclick="finderNavigateBack()">←</button>
-                        <button class="finder-btn" onclick="finderNavigateForward()">→</button>
-                        <button class="finder-btn" onclick="finderNavigateUp()">↑</button>
-                        <input class="finder-path" value="/Users/WebOS/Desktop" onchange="finderNavigateToPath(this.value)">
-                        <button class="finder-btn" onclick="finderCreateFolder()">+ Folder</button>
-                        <button class="finder-btn" onclick="finderChangeView()">Grid</button>
+            <div class="window-content" style="padding: 0; display: flex; flex-direction: column; background: #0f0f12;">
+                <div class="zen-header">
+                    <div class="zen-avatar">☯️</div>
+                    <div class="zen-info">
+                        <div class="zen-name">Zen</div>
+                        <div class="zen-status" id="zenStatus">Ready</div>
                     </div>
-                    <div style="display: flex; height: calc(100% - 50px);">
-                        <div class="finder-sidebar">
-                            <div class="favorites-item active" onclick="finderSelectFavorite(this, 'desktop')">📁 Desktop</div>
-                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'documents')">📄 Documents</div>
-                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'downloads')">⬇️ Downloads</div>
-                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'pictures')">🖼️ Pictures</div>
-                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'movies')">🎬 Movies</div>
-                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'music')">🎵 Music</div>
-                            <div class="menu-separator" style="margin: 10px 0;"></div>
-                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'applications')">💼 Applications</div>
-                            <div class="favorites-item" onclick="finderSelectFavorite(this, 'utilities')">🔧 Utilities</div>
-                        </div>
-                        <div class="finder-main">
-                            <div class="finder-grid" id="finderGrid">
-                                <div class="file-item" onclick="finderSelectFile(this)">
-                                    <span class="file-icon">📄</span>
-                                    <span class="file-name">Document.txt</span>
-                                </div>
-                                <div class="file-item" onclick="finderSelectFile(this)">
-                                    <span class="file-icon">🖼️</span>
-                                    <span class="file-name">Picture.jpg</span>
-                                </div>
-                                <div class="file-item" onclick="finderSelectFile(this)">
-                                    <span class="file-icon">🎬</span>
-                                    <span class="file-name">Video.mp4</span>
-                                </div>
-                                <div class="file-item" onclick="finderSelectFile(this)">
-                                    <span class="file-icon">📁</span>
-                                    <span class="file-name">Projects</span>
-                                </div>
-                                <div class="file-item" onclick="finderSelectFile(this)">
-                                    <span class="file-icon">🎵</span>
-                                    <span class="file-name">Music.mp3</span>
-                                </div>
-                                <div class="file-item" onclick="finderSelectFile(this)">
-                                    <span class="file-icon">📊</span>
-                                    <span class="file-name">Spreadsheet.xlsx</span>
-                                </div>
-                                <div class="file-item" onclick="finderSelectFile(this)">
-                                    <span class="file-icon">📦</span>
-                                    <span class="file-name">Archive.zip</span>
-                                </div>
-                                <div class="file-item" onclick="finderSelectFile(this)">
-                                    <span class="file-icon">🔗</span>
-                                    <span class="file-name">Link.url</span>
-                                </div>
-                            </div>
+                </div>
+
+                <div class="zen-messages" id="zenMessages">
+                    <div class="zen-message zen-assistant">
+                        <div class="zen-bubble">
+                            Hello. I’m Zen, your system assistant.<br><br>
+                            You can ask me to open apps, check the time, or just talk.<br><br>
+                            Try: <em>“Open Terminal”</em> or <em>“What time is it?”</em>
                         </div>
                     </div>
+                </div>
+
+                <div class="zen-input-area">
+                    <input type="text" id="zenInput" class="zen-input" placeholder="Ask Zen…" autocomplete="off">
+                    <button class="zen-send" onclick="zenSend()" title="Send">➤</button>
                 </div>
             </div>
         </div>
 
+        <!-- TextEdit -->
         <div class="window" id="texteditWindow" style="top: 80px; left: 150px; width: 700px; height: 500px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -221,26 +187,15 @@
                         <button class="toolbar-btn" onclick="textOpen()">📁 Open</button>
                     </div>
                     <div contenteditable="true" class="text-content" id="textContent">
-Welcome to WebOS TextEdit!
+Welcome to ZenOS TextEdit!
 
-This is a rich text editor with formatting capabilities. You can:
-
-• Make text **bold**, *italic*, or <u>underlined</u>
-• Change text color and size
-• Align text to the left, center, or right
-• Save and open documents
-
-Try editing this text to see how it works! The webOS experience brings you all the powerful features you'd expect from a Mac OS text editor.
-
-Start typing your masterpiece today...
-
----
-WebOS TextEdit v1.0
+This is a rich text editor. Start typing…
                     </div>
                 </div>
             </div>
         </div>
 
+        <!-- Notes -->
         <div class="window" id="notesWindow" style="top: 100px; left: 200px; width: 500px; height: 600px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -255,31 +210,12 @@ WebOS TextEdit v1.0
                     <div class="notes-header">
                         <input type="text" class="notes-title" id="notesTitle" value="Welcome to Notes" placeholder="Note Title">
                     </div>
-                    <textarea class="notes-content" id="notesContent" placeholder="Start typing your note here...">
-
-This is your personal notes application in WebOS!
-
-Features:
-• Rich text formatting
-• Auto-save functionality
-• Search through notes
-• Organize with folders
-• Sync across devices (simulated)
-
-Tips:
-• Use the title field to organize your notes
-• Notes are automatically saved
-• Try creating multiple notes for different topics
-• Use folders to categorize your thoughts
-
-Happy note-taking!
-
----
-WebOS Notes v1.0</textarea>
+                    <textarea class="notes-content" id="notesContent" placeholder="Start typing your note here...">This is your personal notes application in ZenOS.</textarea>
                 </div>
             </div>
         </div>
 
+        <!-- Paint -->
         <div class="window" id="paintWindow" style="top: 120px; left: 250px; width: 800px; height: 600px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -294,9 +230,6 @@ WebOS Notes v1.0</textarea>
                     <div class="paint-toolbar">
                         <button class="tool-btn active" onclick="paintSelectTool('brush')">🖌️ Brush</button>
                         <button class="tool-btn" onclick="paintSelectTool('eraser')">🧹 Eraser</button>
-                        <button class="tool-btn" onclick="paintSelectTool('line')">📏 Line</button>
-                        <button class="tool-btn" onclick="paintSelectTool('rectangle')">▭ Rectangle</button>
-                        <button class="tool-btn" onclick="paintSelectTool('circle')">⭕ Circle</button>
                         <div style="border-left: 1px solid #ccc; height: 20px;"></div>
                         <input type="color" class="color-picker" id="paintColor" value="#000000" onchange="paintChangeColor(this.value)">
                         <select id="brushSize" onchange="paintChangeSize(this.value)" style="padding: 4px; border: 1px solid #ccc;">
@@ -314,6 +247,7 @@ WebOS Notes v1.0</textarea>
             </div>
         </div>
 
+        <!-- Calculator -->
         <div class="window" id="calculatorWindow" style="top: 200px; left: 400px; width: 320px; height: 480px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -323,29 +257,25 @@ WebOS Notes v1.0</textarea>
                 </div>
                 <div class="window-title">Calculator</div>
             </div>
-            <div class="window-content" style="padding: 0;">
+            <div class="window-content" style="padding: 0; display: flex; flex-direction: column;">
                 <div class="calculator-display" id="calcDisplay">0</div>
                 <div class="calculator-buttons">
                     <button class="calc-btn" onclick="calcClear()">AC</button>
                     <button class="calc-btn" onclick="calcClearEntry()">C</button>
                     <button class="calc-btn" onclick="calcPercent()">%</button>
                     <button class="calc-btn operation" onclick="calcDivide()">÷</button>
-
                     <button class="calc-btn" onclick="calcNumber('7')">7</button>
                     <button class="calc-btn" onclick="calcNumber('8')">8</button>
                     <button class="calc-btn" onclick="calcNumber('9')">9</button>
                     <button class="calc-btn operation" onclick="calcMultiply()">×</button>
-
                     <button class="calc-btn" onclick="calcNumber('4')">4</button>
                     <button class="calc-btn" onclick="calcNumber('5')">5</button>
                     <button class="calc-btn" onclick="calcNumber('6')">6</button>
                     <button class="calc-btn operation" onclick="calcSubtract()">−</button>
-
                     <button class="calc-btn" onclick="calcNumber('1')">1</button>
                     <button class="calc-btn" onclick="calcNumber('2')">2</button>
                     <button class="calc-btn" onclick="calcNumber('3')">3</button>
                     <button class="calc-btn operation" onclick="calcAdd()">+</button>
-
                     <button class="calc-btn" onclick="calcNumber('0')">0</button>
                     <button class="calc-btn" onclick="calcDecimal()">.</button>
                     <button class="calc-btn equals" onclick="calcEquals()">=</button>
@@ -353,6 +283,7 @@ WebOS Notes v1.0</textarea>
             </div>
         </div>
 
+        <!-- Calendar -->
         <div class="window" id="calendarWindow" style="top: 80px; left: 300px; width: 800px; height: 600px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -362,7 +293,7 @@ WebOS Notes v1.0</textarea>
                 </div>
                 <div class="window-title">Calendar</div>
             </div>
-            <div class="window-content" style="padding: 0;">
+            <div class="window-content" style="padding: 0; display: flex; flex-direction: column;">
                 <div class="calendar-header">
                     <button class="finder-btn" onclick="calendarPreviousMonth()">←</button>
                     <h3 id="calendarMonthYear" style="margin: 0; font-size: 16px;">November 2024</h3>
@@ -380,6 +311,7 @@ WebOS Notes v1.0</textarea>
             </div>
         </div>
 
+        <!-- Video Editor -->
         <div class="window" id="videoEditorWindow" style="top: 50px; left: 100px; width: 1000px; height: 700px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -395,21 +327,12 @@ WebOS Notes v1.0</textarea>
                         <button class="finder-btn" onclick="videoNewProject()">📁 New</button>
                         <button class="finder-btn" onclick="videoImport()">📥 Import</button>
                         <button class="finder-btn" onclick="videoExport()">📤 Export</button>
-                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
-                        <button class="finder-btn" onclick="videoCut()">✂️ Cut</button>
-                        <button class="finder-btn" onclick="videoCopy()">📋 Copy</button>
-                        <button class="finder-btn" onclick="videoPaste()">📋 Paste</button>
-                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
-                        <button class="finder-btn" onclick="videoAddTransition()">⚡ Transition</button>
-                        <button class="finder-btn" onclick="videoAddText()">📝 Text</button>
-                        <button class="finder-btn" onclick="videoAddEffect()">✨ Effects</button>
                     </div>
                     <div class="video-preview">
                         <div class="video-placeholder">
                             <div style="text-align: center;">
                                 <div style="font-size: 48px; margin-bottom: 10px;">🎬</div>
                                 <div>Video Preview Area</div>
-                                <div style="font-size: 14px; margin-top: 5px; opacity: 0.8;">Import videos to start editing</div>
                             </div>
                         </div>
                         <div class="preview-controls">
@@ -423,20 +346,17 @@ WebOS Notes v1.0</textarea>
                             <span>00:00</span>
                             <span style="margin-left: 100px;">00:05</span>
                             <span style="margin-left: 100px;">00:10</span>
-                            <span style="margin-left: 100px;">00:15</span>
-                            <span style="margin-left: 100px;">00:20</span>
                         </div>
                         <div class="timeline-tracks" id="timelineTracks">
                             <div class="timeline-track" onclick="selectTimelineTrack(this)">Clip 1</div>
-                            <div class="timeline-track" onclick="selectTimelineTrack(this)">Clip 2</div>
                             <div class="timeline-track" onclick="selectTimelineTrack(this)">Audio</div>
-                            <div class="timeline-track" onclick="selectTimelineTrack(this)">Effects</div>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
 
+        <!-- Preferences -->
         <div class="window" id="preferencesWindow" style="top: 60px; left: 150px; width: 800px; height: 600px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -452,13 +372,7 @@ WebOS Notes v1.0</textarea>
                         <div class="prefs-section active" onclick="selectPrefsSection(this)">General</div>
                         <div class="prefs-section" onclick="selectPrefsSection(this)">Desktop & Screen Saver</div>
                         <div class="prefs-section" onclick="selectPrefsSection(this)">Dock</div>
-                        <div class="prefs-section" onclick="selectPrefsSection(this)">Keyboard</div>
-                        <div class="prefs-section" onclick="selectPrefsSection(this)">Mouse</div>
                         <div class="prefs-section" onclick="selectPrefsSection(this)">Sound</div>
-                        <div class="prefs-section" onclick="selectPrefsSection(this)">Displays</div>
-                        <div class="prefs-section" onclick="selectPrefsSection(this)">Network</div>
-                        <div class="prefs-section" onclick="selectPrefsSection(this)">Security & Privacy</div>
-                        <div class="prefs-section" onclick="selectPrefsSection(this)">Users & Groups</div>
                     </div>
                     <div class="prefs-content" id="prefsContent">
                         <div class="prefs-group">
@@ -466,9 +380,7 @@ WebOS Notes v1.0</textarea>
                             <div class="prefs-item">
                                 <span class="prefs-label">Dark Mode</span>
                                 <div class="prefs-value">
-                                    <div class="switch" onclick="toggleSwitch(this)">
-                                        <div class="switch-slider"></div>
-                                    </div>
+                                    <div class="switch" onclick="toggleSwitch(this)"><div class="switch-slider"></div></div>
                                 </div>
                             </div>
                             <div class="prefs-item">
@@ -476,52 +388,10 @@ WebOS Notes v1.0</textarea>
                                 <div class="prefs-value">
                                     <select style="padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px;">
                                         <option>Blue</option>
-                                        <option>Green</option>
                                         <option>Purple</option>
                                         <option>Pink</option>
                                         <option>Orange</option>
-                                        <option>Red</option>
-                                        <option>Yellow</option>
-                                        <option>Graphite</option>
                                     </select>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="prefs-group">
-                            <div class="prefs-title">System Settings</div>
-                            <div class="prefs-item">
-                                <span class="prefs-label">Show notification center</span>
-                                <div class="prefs-value">
-                                    <div class="switch active" onclick="toggleSwitch(this)">
-                                        <div class="switch-slider"></div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="prefs-item">
-                                <span class="prefs-label">Play sound effects</span>
-                                <div class="prefs-value">
-                                    <div class="switch active" onclick="toggleSwitch(this)">
-                                        <div class="switch-slider"></div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="prefs-group">
-                            <div class="prefs-title">Performance</div>
-                            <div class="prefs-item">
-                                <span class="prefs-label">Reduce motion</span>
-                                <div class="prefs-value">
-                                    <div class="switch" onclick="toggleSwitch(this)">
-                                        <div class="switch-slider"></div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="prefs-item">
-                                <span class="prefs-label">Reduce transparency</span>
-                                <div class="prefs-value">
-                                    <div class="switch" onclick="toggleSwitch(this)">
-                                        <div class="switch-slider"></div>
-                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -530,6 +400,7 @@ WebOS Notes v1.0</textarea>
             </div>
         </div>
 
+        <!-- Terminal -->
         <div class="window" id="terminalWindow" style="top: 150px; left: 350px; width: 700px; height: 450px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -541,19 +412,20 @@ WebOS Notes v1.0</textarea>
             </div>
             <div class="window-content" style="padding: 0;">
                 <div class="terminal">
-                    <div class="terminal-header">bash — 80x24</div>
+                    <div class="terminal-header">zenos — bash</div>
                     <div class="terminal-body" id="terminalBody">
-Last login: Sun Nov 10 12:00:00 on console
-Welcome to WebOS Terminal!
+Last login: on console
+Welcome to ZenOS Terminal.
 
-Type 'help' for available commands or explore the system.
+Type 'help' for available commands.
 
-webos@localhost:~$ <span class="terminal-input-line"><span class="terminal-prompt"></span><input type="text" class="terminal-input" id="terminalInput" onkeypress="terminalKeyPress(event)"></span>
+zenos@localhost:~$ <span class="terminal-input-line"><span class="terminal-prompt"></span><input type="text" class="terminal-input" id="terminalInput" onkeypress="terminalKeyPress(event)"></span>
                     </div>
                 </div>
             </div>
         </div>
 
+        <!-- Preview -->
         <div class="window" id="previewWindow" style="top: 100px; left: 200px; width: 800px; height: 600px;">
             <div class="window-header">
                 <div class="window-controls">
@@ -567,31 +439,28 @@ webos@localhost:~$ <span class="terminal-input-line"><span class="terminal-promp
                 <div style="display: flex; flex-direction: column; height: 100%;">
                     <div class="finder-toolbar">
                         <button class="finder-btn" onclick="previewOpen()">📁 Open</button>
-                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
                         <button class="finder-btn" onclick="previewZoomIn()">🔍+</button>
                         <button class="finder-btn" onclick="previewZoomOut()">🔍-</button>
                         <button class="finder-btn" onclick="previewFit()">Fit</button>
-                        <div style="border-left: 1px solid #ccc; height: 20px;"></div>
-                        <button class="finder-btn" onclick="previewRotate()">↻ Rotate</button>
-                        <button class="finder-btn" onclick="previewCrop()">✂️ Crop</button>
                     </div>
                     <div style="flex: 1; display: flex; align-items: center; justify-content: center; background: #f5f5f5;">
                         <div style="text-align: center;">
                             <div style="font-size: 64px; margin-bottom: 20px;">🖼️</div>
-                            <div style="font-size: 18px; color: #666; margin-bottom: 10px">Preview</div>
-                            <div style="font-size: 14px; color: #999;">Open an image to preview and edit</div>
-                            <button style="margin-top: 20px; padding: 10px 20px; background: #007aff; color: white; border: none; border-radius: 6px; cursor: pointer;" onclick="previewOpen()">Open Image</button>
+                            <div style="font-size: 18px; color: #666;">Preview</div>
+                            <div style="font-size: 14px; color: #999;">Open an image to preview</div>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
 
+        <!-- Spotlight -->
         <div class="spotlight" id="spotlight">
             <input type="text" class="spotlight-search" id="spotlightSearch" placeholder="Spotlight Search" oninput="spotlightSearch(this.value)">
             <div class="spotlight-results" id="spotlightResults"></div>
         </div>
 
+        <!-- Notification -->
         <div class="notification" id="notification">
             <div class="notification-title" id="notificationTitle">Notification</div>
             <div class="notification-message" id="notificationMessage">Message</div>

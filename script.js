@@ -1,36 +1,406 @@
-let currentWindow = null;
-let isDragging = false;
-let dragOffset = { x: 0, y: 0 };
-let terminalHistory = [];
-let terminalIndex = 0;
-let calculatorState = {
-    currentNumber: '0',
-    previousNumber: '',
-    operation: null,
-    waitingForOperand: false
-};
-let calendarDate = new Date();
-let paintTool = 'brush';
-let paintColor = '#000000';
-let paintSize = 5;
-let isDrawing = false;
-let currentMonth = new Date().getMonth();
-let currentYear = new Date().getFullYear();
-let openWindows = new Set();
+/* ============================================================
+   ZenOS – Window Manager + core desktop logic
+   Milestone 1: Real window ownership (position, size, z, focus,
+   minimize, maximize, resize) while preserving existing apps.
+   ============================================================ */
 
+const MENU_BAR_HEIGHT = 28;
+const DOCK_CLEARANCE = 90;
+const MIN_WIDTH = 320;
+const MIN_HEIGHT = 240;
+
+/* ---------- Window Manager ---------- */
+class WindowManager {
+    constructor() {
+        this.windows = new Map(); // id -> state
+        this.zCounter = 100;
+        this.focusedId = null;
+        this.dragState = null;
+        this.resizeState = null;
+
+        this._bindGlobalEvents();
+    }
+
+    register(id, element, options = {}) {
+        if (this.windows.has(id)) return;
+
+        const rect = element.getBoundingClientRect();
+        const state = {
+            id,
+            el: element,
+            x: parseInt(element.style.left) || 100,
+            y: parseInt(element.style.top) || 60,
+            width: parseInt(element.style.width) || 700,
+            height: parseInt(element.style.height) || 500,
+            minimized: false,
+            maximized: false,
+            prevBounds: null,
+            zIndex: ++this.zCounter,
+            title: options.title || id
+        };
+
+        this.windows.set(id, state);
+        this._applyState(state);
+        this._ensureResizeHandles(element);
+        this._wireHeader(element, id);
+    }
+
+    open(id) {
+        const state = this.windows.get(id);
+        if (!state) return;
+
+        state.minimized = false;
+        state.el.classList.remove('minimized');
+        state.el.classList.add('active');
+        this.focus(id);
+        this._updateDockIndicator(id, true);
+        this._applyState(state);
+    }
+
+    close(id) {
+        const state = this.windows.get(id);
+        if (!state) return;
+
+        state.el.classList.remove('active', 'focused', 'minimized', 'maximized');
+        state.minimized = false;
+        state.maximized = false;
+        this._updateDockIndicator(id, false);
+
+        if (this.focusedId === id) {
+            this.focusedId = null;
+            // focus next highest
+            let next = null;
+            let highest = 0;
+            for (const [wid, s] of this.windows) {
+                if (s.el.classList.contains('active') && !s.minimized && s.zIndex > highest) {
+                    highest = s.zIndex;
+                    next = wid;
+                }
+            }
+            if (next) this.focus(next);
+        }
+    }
+
+    minimize(id) {
+        const state = this.windows.get(id);
+        if (!state || state.minimized) return;
+
+        state.minimized = true;
+        state.el.classList.add('minimized');
+        state.el.classList.remove('focused');
+        this._updateDockIndicator(id, true);
+
+        if (this.focusedId === id) {
+            this.focusedId = null;
+        }
+    }
+
+    restore(id) {
+        const state = this.windows.get(id);
+        if (!state) return;
+
+        if (state.minimized) {
+            state.minimized = false;
+            state.el.classList.remove('minimized');
+            state.el.classList.add('active');
+            this.focus(id);
+        } else if (state.maximized) {
+            this._restoreFromMaximize(state);
+        }
+    }
+
+    maximize(id) {
+        const state = this.windows.get(id);
+        if (!state) return;
+
+        if (state.maximized) {
+            this._restoreFromMaximize(state);
+        } else {
+            state.prevBounds = {
+                x: state.x,
+                y: state.y,
+                width: state.width,
+                height: state.height
+            };
+            state.maximized = true;
+            state.el.classList.add('maximized');
+            state.x = 0;
+            state.y = MENU_BAR_HEIGHT;
+            state.width = window.innerWidth;
+            state.height = window.innerHeight - MENU_BAR_HEIGHT;
+            this._applyState(state);
+            this.focus(id);
+        }
+    }
+
+    focus(id) {
+        const state = this.windows.get(id);
+        if (!state || state.minimized) return;
+
+        // unfocus others
+        for (const [wid, s] of this.windows) {
+            s.el.classList.toggle('focused', wid === id);
+        }
+
+        state.zIndex = ++this.zCounter;
+        state.el.style.zIndex = state.zIndex;
+        this.focusedId = id;
+        state.el.classList.add('active');
+        this._updateDockActive(id);
+    }
+
+    setPosition(id, x, y) {
+        const state = this.windows.get(id);
+        if (!state || state.maximized) return;
+        state.x = x;
+        state.y = y;
+        this._clamp(state);
+        this._applyState(state);
+    }
+
+    setSize(id, width, height) {
+        const state = this.windows.get(id);
+        if (!state || state.maximized) return;
+        state.width = Math.max(MIN_WIDTH, width);
+        state.height = Math.max(MIN_HEIGHT, height);
+        this._clamp(state);
+        this._applyState(state);
+    }
+
+    isOpen(id) {
+        const state = this.windows.get(id);
+        return state && state.el.classList.contains('active') && !state.minimized;
+    }
+
+    isMinimized(id) {
+        const state = this.windows.get(id);
+        return state && state.minimized;
+    }
+
+    /* ----- internal helpers ----- */
+    _applyState(state) {
+        const el = state.el;
+        el.style.left = state.x + 'px';
+        el.style.top = state.y + 'px';
+        el.style.width = state.width + 'px';
+        el.style.height = state.height + 'px';
+        el.style.zIndex = state.zIndex;
+    }
+
+    _clamp(state) {
+        const maxX = window.innerWidth - 80;
+        const maxY = window.innerHeight - 60;
+        state.x = Math.max(0, Math.min(state.x, maxX));
+        state.y = Math.max(MENU_BAR_HEIGHT, Math.min(state.y, maxY));
+        state.width = Math.min(state.width, window.innerWidth);
+        state.height = Math.min(state.height, window.innerHeight - MENU_BAR_HEIGHT);
+    }
+
+    _restoreFromMaximize(state) {
+        if (!state.prevBounds) return;
+        state.maximized = false;
+        state.el.classList.remove('maximized');
+        state.x = state.prevBounds.x;
+        state.y = state.prevBounds.y;
+        state.width = state.prevBounds.width;
+        state.height = state.prevBounds.height;
+        state.prevBounds = null;
+        this._applyState(state);
+    }
+
+    _ensureResizeHandles(el) {
+        if (el.querySelector('.resize-handle')) return;
+        const dirs = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+        dirs.forEach(dir => {
+            const handle = document.createElement('div');
+            handle.className = `resize-handle ${dir}`;
+            handle.dataset.dir = dir;
+            el.appendChild(handle);
+        });
+    }
+
+    _wireHeader(el, id) {
+        const header = el.querySelector('.window-header');
+        if (!header) return;
+
+        header.addEventListener('mousedown', (e) => {
+            if (e.target.classList.contains('window-control')) return;
+            this.focus(id);
+            const state = this.windows.get(id);
+            if (state.maximized) return;
+
+            this.dragState = {
+                id,
+                startX: e.clientX,
+                startY: e.clientY,
+                origX: state.x,
+                origY: state.y
+            };
+            e.preventDefault();
+        });
+
+        // resize handles
+        el.querySelectorAll('.resize-handle').forEach(handle => {
+            handle.addEventListener('mousedown', (e) => {
+                e.stopPropagation();
+                this.focus(id);
+                const state = this.windows.get(id);
+                if (state.maximized) return;
+
+                this.resizeState = {
+                    id,
+                    dir: handle.dataset.dir,
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    origX: state.x,
+                    origY: state.y,
+                    origW: state.width,
+                    origH: state.height
+                };
+                e.preventDefault();
+            });
+        });
+
+        // click anywhere on window focuses it
+        el.addEventListener('mousedown', () => this.focus(id));
+    }
+
+    _bindGlobalEvents() {
+        document.addEventListener('mousemove', (e) => {
+            if (this.dragState) {
+                const s = this.windows.get(this.dragState.id);
+                if (!s) return;
+                const dx = e.clientX - this.dragState.startX;
+                const dy = e.clientY - this.dragState.startY;
+                s.x = this.dragState.origX + dx;
+                s.y = this.dragState.origY + dy;
+                this._clamp(s);
+                this._applyState(s);
+            }
+
+            if (this.resizeState) {
+                const s = this.windows.get(this.resizeState.id);
+                if (!s) return;
+                const dx = e.clientX - this.resizeState.startX;
+                const dy = e.clientY - this.resizeState.startY;
+                const dir = this.resizeState.dir;
+                let { origX, origY, origW, origH } = this.resizeState;
+
+                if (dir.includes('e')) s.width = Math.max(MIN_WIDTH, origW + dx);
+                if (dir.includes('s')) s.height = Math.max(MIN_HEIGHT, origH + dy);
+                if (dir.includes('w')) {
+                    const newW = Math.max(MIN_WIDTH, origW - dx);
+                    s.x = origX + (origW - newW);
+                    s.width = newW;
+                }
+                if (dir.includes('n')) {
+                    const newH = Math.max(MIN_HEIGHT, origH - dy);
+                    s.y = origY + (origH - newH);
+                    s.height = newH;
+                }
+                this._clamp(s);
+                this._applyState(s);
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            this.dragState = null;
+            this.resizeState = null;
+        });
+
+        window.addEventListener('resize', () => {
+            for (const state of this.windows.values()) {
+                if (state.maximized) {
+                    state.width = window.innerWidth;
+                    state.height = window.innerHeight - MENU_BAR_HEIGHT;
+                    this._applyState(state);
+                } else {
+                    this._clamp(state);
+                    this._applyState(state);
+                }
+            }
+        });
+    }
+
+    _updateDockIndicator(id, hasWindow) {
+        const item = document.querySelector(`.dock-item[data-app="${id}"]`);
+        if (item) item.classList.toggle('has-window', hasWindow);
+    }
+
+    _updateDockActive(id) {
+        document.querySelectorAll('.dock-item').forEach(item => {
+            item.classList.toggle('active', item.dataset.app === id);
+        });
+    }
+}
+
+/* ---------- Global instance ---------- */
+const wm = new WindowManager();
+
+/* ---------- Compatibility API (keeps existing HTML working) ---------- */
+function openApp(appId) {
+    if (!wm.windows.has(appId)) {
+        const el = document.getElementById(appId + 'Window');
+        if (el) wm.register(appId, el);
+    }
+
+    if (wm.isMinimized(appId)) {
+        wm.restore(appId);
+    } else if (wm.isOpen(appId)) {
+        wm.focus(appId);
+    } else {
+        wm.open(appId);
+    }
+
+    // special focus for terminal
+    if (appId === 'terminal') {
+        const input = document.getElementById('terminalInput');
+        if (input) setTimeout(() => input.focus(), 50);
+    }
+}
+
+function closeApp(appId) {
+    wm.close(appId);
+}
+
+function minimizeApp(appId) {
+    wm.minimize(appId);
+    showNotification('Minimized', `${appId} minimized to Dock`);
+}
+
+function maximizeApp(appId) {
+    wm.maximize(appId);
+}
+
+/* ---------- Desktop init ---------- */
 function initDesktop() {
+    // Register all existing windows
+    const appIds = [
+        'zen', 'textedit', 'notes', 'paint', 'calculator',
+    'calendar', 'videoEditor', 'preferences', 'terminal', 'preview'
+    ];
+
+    appIds.forEach(id => {
+        const el = document.getElementById(id + 'Window');
+        if (el) {
+            wm.register(id, el, { title: id });
+            // start closed except finder
+            el.classList.remove('active');
+        }
+    });
+
     updateTime();
     setInterval(updateTime, 1000);
     initializePaint();
     initializeCalendar();
-    initializeWindowDrag();
     setupKeyboardShortcuts();
 
-    openApp('finder');
+    // Open Zen by default
+    openApp('zen');
 
     setTimeout(() => {
-        showNotification('Welcome to WebOS', 'Your Mac OS experience is ready! Press Cmd+Space for Spotlight search.');
-    }, 1000);
+        showNotification('Welcome to ZenOS', 'Window Manager is now active. Drag, resize, minimize and maximize freely.');
+    }, 800);
 }
 
 function updateTime() {
@@ -40,265 +410,95 @@ function updateTime() {
         minute: '2-digit',
         hour12: true
     });
-    document.getElementById('desktopTime').textContent = timeString;
+    const el = document.getElementById('desktopTime');
+    if (el) el.textContent = timeString;
 }
 
+/* ---------- Menus / Spotlight / Notifications (unchanged logic) ---------- */
 function toggleMenu(menuId) {
     const menu = document.getElementById(menuId);
     if (!menu) return;
-
-    const allMenus = document.querySelectorAll('.menu-dropdown');
-    allMenus.forEach(m => {
+    document.querySelectorAll('.menu-dropdown').forEach(m => {
         if (m.id !== menuId) m.classList.remove('active');
     });
-
     menu.classList.toggle('active');
-}
-
-function setDockActive(appId) {
-    document.querySelectorAll('.dock-item').forEach(item => {
-        item.classList.toggle('active', item.dataset.app === appId);
-    });
-}
-
-function openApp(appId) {
-    const window = document.getElementById(appId + 'Window');
-    if (!window) return;
-
-    window.classList.add('active');
-    window.style.zIndex = getHighestZIndex() + 1;
-    currentWindow = appId;
-    openWindows.add(appId);
-
-    setDockActive(appId);
-
-    positionWindow(window);
-
-    if (appId === 'terminal') {
-        const input = document.getElementById('terminalInput');
-        if (input) input.focus();
-    }
-}
-
-function closeApp(appId) {
-    const window = document.getElementById(appId + 'Window');
-    if (window) {
-        window.classList.remove('active');
-        openWindows.delete(appId);
-    }
-
-    if (currentWindow === appId) {
-        currentWindow = null;
-    }
-
-    const activeWindows = document.querySelectorAll('.window.active');
-    if (activeWindows.length > 0) {
-        currentWindow = activeWindows[activeWindows.length - 1].id.replace('Window', '');
-    } else {
-        currentWindow = null;
-    }
-
-    setDockActive(currentWindow);
-}
-
-function minimizeApp(appId) {
-    const window = document.getElementById(appId + 'Window');
-    if (window) {
-        closeApp(appId);
-        showNotification('Window Minimized', `${appId.charAt(0).toUpperCase() + appId.slice(1)} has been minimized to dock`);
-    }
-}
-
-function maximizeApp(appId) {
-    const window = document.getElementById(appId + 'Window');
-    if (!window) return;
-
-    const isMaximized = window.style.width === '100%';
-    if (isMaximized) {
-        window.style.width = '800px';
-        window.style.height = '600px';
-        window.style.top = '100px';
-        window.style.left = '200px';
-    } else {
-        window.style.width = '100%';
-        window.style.height = 'calc(100% - 28px)';
-        window.style.top = '28px';
-        window.style.left = '0px';
-    }
-}
-
-function positionWindow(window) {
-    if (!window.style.top || window.style.top === '50px') {
-        const desktopRect = document.getElementById('desktop').getBoundingClientRect();
-        const openAppsCount = document.querySelectorAll('.window.active').length;
-
-        window.style.top = (80 + openAppsCount * 30) + 'px';
-        window.style.left = (150 + openAppsCount * 30) + 'px';
-
-        const rect = window.getBoundingClientRect();
-        if (rect.right > desktopRect.width) {
-            window.style.left = (desktopRect.width - rect.width - 50) + 'px';
-        }
-        if (rect.bottom > desktopRect.height) {
-            window.style.top = (desktopRect.height - rect.height - 100) + 'px';
-        }
-    }
-}
-
-function initializeWindowDrag() {
-    document.querySelectorAll('.window-header').forEach(header => {
-        header.addEventListener('mousedown', startDrag);
-    });
-
-    document.addEventListener('mousemove', drag);
-    document.addEventListener('mouseup', stopDrag);
-}
-
-function startDrag(e) {
-    if (e.target.classList.contains('window-control')) return;
-
-    const window = e.target.closest('.window');
-    if (!window) return;
-
-    currentWindow = window.id.replace('Window', '');
-    isDragging = true;
-
-    const rect = window.getBoundingClientRect();
-    dragOffset.x = e.clientX - rect.left;
-    dragOffset.y = e.clientY - rect.top;
-
-    window.style.zIndex = getHighestZIndex() + 1;
-}
-
-function drag(e) {
-    if (!isDragging || !currentWindow) return;
-
-    const activeWindow = document.getElementById(currentWindow + 'Window');
-    if (!activeWindow) return;
-
-    const desktopRect = document.getElementById('desktop').getBoundingClientRect();
-
-    let newX = e.clientX - desktopRect.left - dragOffset.x;
-    let newY = e.clientY - desktopRect.top - dragOffset.y;
-
-    newX = Math.max(0, Math.min(newX, desktopRect.width - activeWindow.offsetWidth));
-    newY = Math.max(28, Math.min(newY, desktopRect.height - activeWindow.offsetHeight));
-
-    activeWindow.style.left = newX + 'px';
-    activeWindow.style.top = newY + 'px';
-}
-
-function stopDrag() {
-    isDragging = false;
-    currentWindow = null;
-}
-
-function getHighestZIndex() {
-    const windows = document.querySelectorAll('.window');
-    let highest = 100;
-
-    windows.forEach(window => {
-        const zIndex = parseInt(window.style.zIndex) || 0;
-        if (zIndex > highest) highest = zIndex;
-    });
-
-    return highest;
 }
 
 function showNotification(title, message) {
     const notification = document.getElementById('notification');
-    const titleElement = document.getElementById('notificationTitle');
-    const messageElement = document.getElementById('notificationMessage');
-
-    titleElement.textContent = title;
-    messageElement.textContent = message;
-
+    document.getElementById('notificationTitle').textContent = title;
+    document.getElementById('notificationMessage').textContent = message;
     notification.classList.add('show');
-
-    setTimeout(() => {
-        notification.classList.remove('show');
-    }, 3000);
+    setTimeout(() => notification.classList.remove('show'), 3000);
 }
 
 function activateSpotlight() {
     const spotlight = document.getElementById('spotlight');
     const search = document.getElementById('spotlightSearch');
-
     spotlight.classList.add('active');
     search.value = '';
     search.focus();
-
-    const apps = [
-        { name: 'Finder', id: 'finder', icon: '🗂️' },
-        { name: 'TextEdit', id: 'textedit', icon: '📝' },
-        { name: 'Notes', id: 'notes', icon: '📋' },
-        { name: 'Paint', id: 'paint', icon: '🎨' },
-        { name: 'Calculator', id: 'calculator', icon: '🔢' },
-        { name: 'Calendar', id: 'calendar', icon: '📅' },
-        { name: 'Video Editor', id: 'videoEditor', icon: '🎬' },
-        { name: 'Terminal', id: 'terminal', icon: '💻' },
-        { name: 'Preview', id: 'preview', icon: '🖼️' }
-    ];
-
-    updateSpotlightResults(apps);
-}
-
-function spotlightSearch(query) {
-    const apps = [
-        { name: 'Finder', id: 'finder', icon: '🗂️' },
-        { name: 'TextEdit', id: 'textedit', icon: '📝' },
-        { name: 'Notes', id: 'notes', icon: '📋' },
-        { name: 'Paint', id: 'paint', icon: '🎨' },
-        { name: 'Calculator', id: 'calculator', icon: '🔢' },
-        { name: 'Calendar', id: 'calendar', icon: '📅' },
-        { name: 'Video Editor', id: 'videoEditor', icon: '🎬' },
-        { name: 'Terminal', id: 'terminal', icon: '💻' },
-        { name: 'Preview', id: 'preview', icon: '🖼️' }
-    ];
-
-    const filtered = apps.filter(app =>
-        app.name.toLowerCase().includes(query.toLowerCase())
-    );
-
-    updateSpotlightResults(filtered);
-}
-
-function updateSpotlightResults(apps) {
-    const resultsContainer = document.getElementById('spotlightResults');
-    resultsContainer.innerHTML = '';
-
-    apps.forEach(app => {
-        const item = document.createElement('div');
-        item.className = 'spotlight-item';
-        item.innerHTML = `
-            <span class="spotlight-icon">${app.icon}</span>
-            <span>${app.name}</span>
-        `;
-        item.onclick = () => {
-            openApp(app.id);
-            deactivateSpotlight();
-        };
-        resultsContainer.appendChild(item);
-    });
+    spotlightSearch('');
 }
 
 function deactivateSpotlight() {
     document.getElementById('spotlight').classList.remove('active');
 }
 
+function spotlightSearch(query) {
+    const apps = [
+        { name: 'Zen', id: 'zen', icon: '☯️' },
+        { name: 'TextEdit', id: 'textedit', icon: '📝' },
+        { name: 'Notes', id: 'notes', icon: '📋' },
+        { name: 'Paint', id: 'paint', icon: '🎨' },
+        { name: 'Calculator', id: 'calculator', icon: '🔢' },
+        { name: 'Calendar', id: 'calendar', icon: '📅' },
+        { name: 'Video Editor', id: 'videoEditor', icon: '🎬' },
+        { name: 'Terminal', id: 'terminal', icon: '💻' },
+        { name: 'Preview', id: 'preview', icon: '🖼️' },
+        { name: 'System Preferences', id: 'preferences', icon: '⚙️' }
+    ];
+    const filtered = query
+        ? apps.filter(a => a.name.toLowerCase().includes(query.toLowerCase()))
+        : apps;
+    updateSpotlightResults(filtered);
+}
+
+function updateSpotlightResults(apps) {
+    const container = document.getElementById('spotlightResults');
+    container.innerHTML = '';
+    apps.forEach(app => {
+        const item = document.createElement('div');
+        item.className = 'spotlight-item';
+        item.innerHTML = `<span class="spotlight-icon">${app.icon}</span><span>${app.name}</span>`;
+        item.onclick = () => {
+            openApp(app.id);
+            deactivateSpotlight();
+        };
+        container.appendChild(item);
+    });
+}
+
+/* ---------- Calculator ---------- */
+let calculatorState = {
+    currentNumber: '0',
+    previousNumber: '',
+    operation: null,
+    waitingForOperand: false
+};
+
 function calcNumber(num) {
     if (calculatorState.waitingForOperand) {
         calculatorState.currentNumber = num;
         calculatorState.waitingForOperand = false;
     } else {
-        calculatorState.currentNumber = calculatorState.currentNumber === '0' ? num : calculatorState.currentNumber + num;
+        calculatorState.currentNumber =
+            calculatorState.currentNumber === '0' ? num : calculatorState.currentNumber + num;
     }
     updateCalcDisplay();
 }
 
 function calcOperation(op) {
-    if (calculatorState.currentNumber === '' && calculatorState.previousNumber === '') return;
-
     calculatorState.operation = op;
     calculatorState.waitingForOperand = true;
     calculatorState.previousNumber = calculatorState.currentNumber;
@@ -310,11 +510,9 @@ function calcMultiply() { calcOperation('*'); }
 function calcDivide() { calcOperation('/'); }
 
 function calcEquals() {
-    if (!calculatorState.operation || calculatorState.previousNumber === '') return;
-
+    if (!calculatorState.operation) return;
     const prev = parseFloat(calculatorState.previousNumber);
     const current = parseFloat(calculatorState.currentNumber);
-
     let result;
     switch (calculatorState.operation) {
         case '+': result = prev + current; break;
@@ -323,20 +521,15 @@ function calcEquals() {
         case '/': result = current !== 0 ? prev / current : 'Error'; break;
         default: return;
     }
-
-    calculatorState.currentNumber = result.toString();
+    calculatorState.currentNumber = String(result);
     calculatorState.operation = null;
     calculatorState.previousNumber = '';
     calculatorState.waitingForOperand = true;
-
     updateCalcDisplay();
 }
 
 function calcClear() {
-    calculatorState.currentNumber = '0';
-    calculatorState.previousNumber = '';
-    calculatorState.operation = null;
-    calculatorState.waitingForOperand = false;
+    calculatorState = { currentNumber: '0', previousNumber: '', operation: null, waitingForOperand: false };
     updateCalcDisplay();
 }
 
@@ -346,7 +539,7 @@ function calcClearEntry() {
 }
 
 function calcPercent() {
-    calculatorState.currentNumber = (parseFloat(calculatorState.currentNumber) / 100).toString();
+    calculatorState.currentNumber = String(parseFloat(calculatorState.currentNumber) / 100);
     updateCalcDisplay();
 }
 
@@ -364,55 +557,34 @@ function updateCalcDisplay() {
     document.getElementById('calcDisplay').textContent = calculatorState.currentNumber || '0';
 }
 
-function textBold() {
-    document.execCommand('bold', false, null);
-    document.getElementById('textContent').focus();
-}
-
-function textItalic() {
-    document.execCommand('italic', false, null);
-    document.getElementById('textContent').focus();
-}
-
-function textUnderline() {
-    document.execCommand('underline', false, null);
-    document.getElementById('textContent').focus();
-}
-
+/* ---------- TextEdit helpers ---------- */
+function textBold() { document.execCommand('bold'); document.getElementById('textContent').focus(); }
+function textItalic() { document.execCommand('italic'); document.getElementById('textContent').focus(); }
+function textUnderline() { document.execCommand('underline'); document.getElementById('textContent').focus(); }
 function textAlign(align) {
-    document.execCommand(`justify${align.charAt(0).toUpperCase() + align.slice(1)}`, false, null);
+    document.execCommand(`justify${align.charAt(0).toUpperCase() + align.slice(1)}`);
     document.getElementById('textContent').focus();
 }
-
-function textChangeColor(color) {
-    document.execCommand('foreColor', false, color);
-    document.getElementById('textContent').focus();
-}
-
+function textChangeColor(color) { document.execCommand('foreColor', false, color); }
 function textChangeSize(size) {
     document.execCommand('fontSize', false, '7');
-    const fontElements = document.getElementsByTagName('font');
-    for (let i = 0; i < fontElements.length; i++) {
-        if (fontElements[i].size === '7') {
-            fontElements[i].removeAttribute('size');
-            fontElements[i].style.fontSize = size;
-        }
-    }
-    document.getElementById('textContent').focus();
+    document.querySelectorAll('font[size="7"]').forEach(el => {
+        el.removeAttribute('size');
+        el.style.fontSize = size;
+    });
 }
+function textSave() { showNotification('Saved', 'Document saved'); }
+function textOpen() { showNotification('Open', 'Open dialog (not yet implemented)'); }
 
-function textSave() {
-    showNotification('Document Saved', 'Your changes have been saved successfully');
-}
-
-function textOpen() {
-    showNotification('Open Document', 'Opening existing document...');
-}
+/* ---------- Paint ---------- */
+let paintTool = 'brush';
+let paintColor = '#000000';
+let paintSize = 5;
+let isDrawing = false;
 
 function initializePaint() {
     const canvas = document.getElementById('paintCanvas');
     if (!canvas) return;
-
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -424,80 +596,54 @@ function initializePaint() {
 }
 
 function startDrawing(e) {
-    const canvas = document.getElementById('paintCanvas');
-    if (!canvas) return;
-
     isDrawing = true;
+    const canvas = document.getElementById('paintCanvas');
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
     const ctx = canvas.getContext('2d');
     ctx.beginPath();
-    ctx.moveTo(x, y);
+    ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
 }
 
 function draw(e) {
     if (!isDrawing) return;
-
     const canvas = document.getElementById('paintCanvas');
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
     const ctx = canvas.getContext('2d');
     ctx.lineWidth = paintSize;
     ctx.lineCap = 'round';
-
     if (paintTool === 'brush') {
         ctx.globalCompositeOperation = 'source-over';
         ctx.strokeStyle = paintColor;
-    } else if (paintTool === 'eraser') {
+    } else {
         ctx.globalCompositeOperation = 'destination-out';
     }
-
-    ctx.lineTo(x, y);
+    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
     ctx.stroke();
 }
 
 function stopDrawing() {
     isDrawing = false;
-    const canvas = document.getElementById('paintCanvas');
-    const ctx = canvas.getContext('2d');
-    ctx.beginPath();
 }
 
 function paintSelectTool(tool) {
     paintTool = tool;
-    document.querySelectorAll('.tool-btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-
-    const button = event?.target.closest('.tool-btn');
-    if (button) {
-        button.classList.add('active');
-    }
+    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+    if (event && event.target) event.target.closest('.tool-btn')?.classList.add('active');
 }
 
-function paintChangeColor(color) {
-    paintColor = color;
-}
-
-function paintChangeSize(size) {
-    paintSize = parseInt(size);
-}
-
+function paintChangeColor(c) { paintColor = c; }
+function paintChangeSize(s) { paintSize = parseInt(s); }
 function paintClear() {
     const canvas = document.getElementById('paintCanvas');
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    showNotification('Canvas Cleared', 'Your drawing has been cleared');
 }
+function paintSave() { showNotification('Saved', 'Drawing saved'); }
 
-function paintSave() {
-    showNotification('Drawing Saved', 'Your artwork has been saved');
-}
+/* ---------- Calendar ---------- */
+let currentMonth = new Date().getMonth();
+let currentYear = new Date().getFullYear();
 
 function initializeCalendar() {
     updateCalendarDisplay();
@@ -505,85 +651,74 @@ function initializeCalendar() {
 
 function updateCalendarDisplay() {
     const monthYear = document.getElementById('calendarMonthYear');
-    const calendarView = document.getElementById('calendarView');
+    const view = document.getElementById('calendarView');
+    if (!monthYear || !view) return;
 
-    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-        'July', 'August', 'September', 'October', 'November', 'December'];
+    const names = ['January','February','March','April','May','June',
+                   'July','August','September','October','November','December'];
+    monthYear.textContent = `${names[currentMonth]} ${currentYear}`;
 
-    monthYear.textContent = `${monthNames[currentMonth]} ${currentYear}`;
-
-    const headers = calendarView.querySelectorAll('.calendar-day-header');
-    calendarView.innerHTML = '';
-    headers.forEach(header => calendarView.appendChild(header));
+    const headers = [...view.querySelectorAll('.calendar-day-header')];
+    view.innerHTML = '';
+    headers.forEach(h => view.appendChild(h));
 
     const firstDay = new Date(currentYear, currentMonth, 1).getDay();
     const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
-    const daysInPrevMonth = new Date(currentYear, currentMonth, 0).getDate();
-
+    const daysInPrev = new Date(currentYear, currentMonth, 0).getDate();
     const today = new Date();
-    const isCurrentMonth = today.getFullYear() === currentYear && today.getMonth() === currentMonth;
-    const todayDate = today.getDate();
+    const isCurrent = today.getFullYear() === currentYear && today.getMonth() === currentMonth;
 
     for (let i = firstDay - 1; i >= 0; i--) {
-        const day = document.createElement('div');
-        day.className = 'calendar-day other-month';
-        day.textContent = daysInPrevMonth - i;
-        calendarView.appendChild(day);
+        const d = document.createElement('div');
+        d.className = 'calendar-day other-month';
+        d.textContent = daysInPrev - i;
+        view.appendChild(d);
     }
 
     for (let day = 1; day <= daysInMonth; day++) {
-        const dayElement = document.createElement('div');
-        dayElement.className = 'calendar-day';
-        if (isCurrentMonth && day === todayDate) {
-            dayElement.classList.add('today');
-        }
-        dayElement.textContent = day;
-        dayElement.onclick = () => calendarSelectDay(dayElement, day);
-        calendarView.appendChild(dayElement);
+        const d = document.createElement('div');
+        d.className = 'calendar-day';
+        if (isCurrent && day === today.getDate()) d.classList.add('today');
+        d.textContent = day;
+        d.onclick = () => {
+            view.querySelectorAll('.calendar-day').forEach(x => x.classList.remove('selected'));
+            d.classList.add('selected');
+        };
+        view.appendChild(d);
     }
 
-    const totalCells = calendarView.children.length - 7;
-    const remainingCells = 35 - totalCells;
-    for (let day = 1; day <= remainingCells; day++) {
-        const dayElement = document.createElement('div');
-        dayElement.className = 'calendar-day other-month';
-        dayElement.textContent = day;
-        calendarView.appendChild(dayElement);
+    const total = view.children.length - 7;
+    for (let day = 1; total + day <= 35; day++) {
+        const d = document.createElement('div');
+        d.className = 'calendar-day other-month';
+        d.textContent = day;
+        view.appendChild(d);
     }
 }
 
 function calendarPreviousMonth() {
     currentMonth--;
-    if (currentMonth < 0) {
-        currentMonth = 11;
-        currentYear--;
-    }
+    if (currentMonth < 0) { currentMonth = 11; currentYear--; }
     updateCalendarDisplay();
 }
 
 function calendarNextMonth() {
     currentMonth++;
-    if (currentMonth > 11) {
-        currentMonth = 0;
-        currentYear++;
-    }
+    if (currentMonth > 11) { currentMonth = 0; currentYear++; }
     updateCalendarDisplay();
 }
 
-function calendarSelectDay(element) {
-    document.querySelectorAll('.calendar-day').forEach(d => d.classList.remove('selected'));
-    element.classList.add('selected');
-    showNotification('Date Selected', `Selected ${element.textContent}`);
-}
+/* ---------- Terminal ---------- */
+let terminalHistory = [];
+let terminalIndex = 0;
 
 function terminalKeyPress(e) {
     if (e.key === 'Enter') {
         const input = document.getElementById('terminalInput');
-        const command = input.value.trim();
-
-        if (command) {
-            executeCommand(command);
-            terminalHistory.push(command);
+        const cmd = input.value.trim();
+        if (cmd) {
+            executeCommand(cmd);
+            terminalHistory.push(cmd);
             terminalIndex = terminalHistory.length;
             input.value = '';
         }
@@ -606,272 +741,192 @@ function terminalKeyPress(e) {
 }
 
 function executeCommand(command) {
-    const terminalBody = document.getElementById('terminalBody');
-    const commandLine = document.createElement('div');
-    commandLine.textContent = `webos@localhost:~$ ${command}`;
-    terminalBody.insertBefore(commandLine, terminalBody.lastElementChild);
+    const body = document.getElementById('terminalBody');
+    const line = document.createElement('div');
+    line.textContent = `zenos@localhost:~$ ${command}`;
+    body.insertBefore(line, body.lastElementChild);
 
-    const response = document.createElement('div');
-    response.style.marginLeft = '20px';
+    const resp = document.createElement('div');
+    resp.style.marginLeft = '12px';
 
-    switch (command.toLowerCase()) {
+    const cmd = command.toLowerCase();
+    switch (cmd) {
         case 'help':
-            response.innerHTML = `Available commands:<br>
-  help     - Show this help message<br>
-  clear    - Clear terminal<br>
-  date     - Show current date and time<br>
-  ls       - List files<br>
-  pwd      - Show current directory<br>
-  echo     - Display a message<br>
-  calc     - Open calculator<br>
-  exit     - Close terminal`;
+            resp.innerHTML = `Available commands:<br>
+  help     – this message<br>
+  clear    – clear terminal<br>
+  date     – current date/time<br>
+  ls       – list (virtual)<br>
+  pwd      – print working directory<br>
+  echo …   – print text<br>
+  apps     – list applications<br>
+  open …   – open an application<br>
+  exit     – close terminal`;
             break;
         case 'clear':
-            const lines = terminalBody.querySelectorAll('div');
-            lines.forEach((line, index) => {
-                if (index < lines.length - 1) line.remove();
+            [...body.querySelectorAll('div')].forEach((d, i, arr) => {
+                if (i < arr.length - 1) d.remove();
             });
             return;
         case 'date':
-            response.textContent = new Date().toString();
+            resp.textContent = new Date().toString();
             break;
         case 'ls':
-            response.innerHTML = `Desktop  Documents  Downloads<br>
-Pictures  Movies     Music<br>
-Applications  Utilities`;
+            resp.innerHTML = 'Desktop  Documents  Downloads<br>Pictures  Movies  Music<br>Applications  Utilities';
             break;
         case 'pwd':
-            response.textContent = '/Users/WebOS';
+            resp.textContent = '/Users/ZenOS';
+            break;
+        case 'apps':
+            resp.textContent = 'finder textedit notes paint calculator calendar videoEditor preferences terminal preview';
             break;
         case 'exit':
             closeApp('terminal');
             return;
         default:
-            if (command.startsWith('echo ')) {
-                response.textContent = command.substring(5);
-            } else if (command === 'calc') {
-                openApp('calculator');
-                response.textContent = 'Opening Calculator...';
+            if (cmd.startsWith('echo ')) {
+                resp.textContent = command.slice(5);
+            } else if (cmd.startsWith('open ')) {
+                const app = command.slice(5).trim();
+                openApp(app);
+                resp.textContent = `Opening ${app}…`;
             } else {
-                response.textContent = `bash: ${command}: command not found. Type 'help' for available commands.`;
+                resp.textContent = `zenos: command not found: ${command}`;
             }
     }
 
-    terminalBody.insertBefore(response, terminalBody.lastElementChild);
-    terminalBody.scrollTop = terminalBody.scrollHeight;
+    body.insertBefore(resp, body.lastElementChild);
+    body.scrollTop = body.scrollHeight;
 }
 
-function videoNewProject() {
-    document.getElementById('timelineTracks').innerHTML = '<div class="timeline-track" onclick="selectTimelineTrack(this)">Timeline Empty</div>';
-    showNotification('New Project', 'Created new video project');
+/* ---------- Finder stubs ---------- */
+function finderNavigateBack() { showNotification('Finder', 'Back'); }
+function finderNavigateForward() { showNotification('Finder', 'Forward'); }
+function finderNavigateUp() { showNotification('Finder', 'Up'); }
+function finderNavigateToPath(p) { showNotification('Finder', `Path: ${p}`); }
+function finderCreateFolder() { showNotification('Finder', 'New Folder'); }
+function finderChangeView() { showNotification('Finder', 'View changed'); }
+function finderSelectFavorite(el, folder) {
+    document.querySelectorAll('.favorites-item').forEach(i => i.classList.remove('active'));
+    el.classList.add('active');
+    const paths = {
+        desktop: '/Users/ZenOS/Desktop',
+        documents: '/Users/ZenOS/Documents',
+        downloads: '/Users/ZenOS/Downloads',
+        pictures: '/Users/ZenOS/Pictures',
+        movies: '/Users/ZenOS/Movies',
+        music: '/Users/ZenOS/Music',
+        applications: '/Applications',
+        utilities: '/Applications/Utilities'
+    };
+    const input = document.querySelector('.finder-path');
+    if (input) input.value = paths[folder] || '/Users/ZenOS';
+}
+function finderSelectFile(el) {
+    document.querySelectorAll('.file-item').forEach(i => i.classList.remove('selected'));
+    el.classList.add('selected');
 }
 
-function videoImport() {
-    showNotification('Import Video', 'Select video files to import');
-}
-
-function videoExport() {
-    showNotification('Export Video', 'Exporting video project...');
-}
-
-function videoCut() {
-    showNotification('Cut Clip', 'Selected clip cut to clipboard');
-}
-
-function videoCopy() {
-    showNotification('Copy Clip', 'Selected clip copied to clipboard');
-}
-
-function videoPaste() {
-    showNotification('Paste Clip', 'Clip pasted to timeline');
-}
-
-function videoAddTransition() {
-    showNotification('Add Transition', 'Transition added between clips');
-}
-
-function videoAddText() {
-    showNotification('Add Text', 'Text overlay added to video');
-}
-
-function videoAddEffect() {
-    showNotification('Add Effect', 'Visual effect applied to clip');
-}
-
-function videoPlay() {
-    showNotification('Video Playing', 'Video is now playing');
-}
-
-function videoPause() {
-    showNotification('Video Paused', 'Video playback paused');
-}
-
-function videoStop() {
-    showNotification('Video Stopped', 'Video playback stopped');
-}
-
-function selectTimelineTrack(track) {
-    document.querySelectorAll('.timeline-track').forEach(t => {
-        t.style.background = '#555';
-    });
-    track.style.background = '#007aff';
+/* ---------- Video / Preview / Prefs stubs ---------- */
+function videoNewProject() { showNotification('Video', 'New project'); }
+function videoImport() { showNotification('Video', 'Import'); }
+function videoExport() { showNotification('Video', 'Export'); }
+function videoCut() { showNotification('Video', 'Cut'); }
+function videoCopy() { showNotification('Video', 'Copy'); }
+function videoPaste() { showNotification('Video', 'Paste'); }
+function videoAddTransition() { showNotification('Video', 'Transition'); }
+function videoAddText() { showNotification('Video', 'Text'); }
+function videoAddEffect() { showNotification('Video', 'Effect'); }
+function videoPlay() { showNotification('Video', 'Play'); }
+function videoPause() { showNotification('Video', 'Pause'); }
+function videoStop() { showNotification('Video', 'Stop'); }
+function selectTimelineTrack(t) {
+    document.querySelectorAll('.timeline-track').forEach(x => x.style.background = '#555');
+    t.style.background = '#007aff';
 }
 
 function selectPrefsSection(section) {
-    document.querySelectorAll('.prefs-section').forEach(s => {
-        s.classList.remove('active');
-    });
+    document.querySelectorAll('.prefs-section').forEach(s => s.classList.remove('active'));
     section.classList.add('active');
 }
+function toggleSwitch(el) { el.classList.toggle('active'); }
 
-function toggleSwitch(switchElement) {
-    switchElement.classList.toggle('active');
-}
-
-function previewOpen() {
-    showNotification('Open Image', 'Opening image file...');
-}
-
-function previewZoomIn() {
-    showNotification('Zoom In', 'Image zoomed in');
-}
-
-function previewZoomOut() {
-    showNotification('Zoom Out', 'Image zoomed out');
-}
-
-function previewFit() {
-    showNotification('Fit to Window', 'Image fitted to window');
-}
-
-function previewRotate() {
-    showNotification('Rotate Image', 'Image rotated 90 degrees');
-}
-
-function previewCrop() {
-    showNotification('Crop Image', 'Crop tool activated');
-}
-
-function finderNavigateBack() {
-    showNotification('Navigation', 'Going back to previous folder');
-}
-
-function finderNavigateForward() {
-    showNotification('Navigation', 'Going to next folder');
-}
-
-function finderNavigateUp() {
-    showNotification('Navigation', 'Going up to parent folder');
-}
-
-function finderNavigateToPath(path) {
-    showNotification('Navigation', `Navigating to ${path}`);
-}
-
-function finderCreateFolder() {
-    showNotification('New Folder', 'Created new folder');
-}
-
-function finderChangeView() {
-    showNotification('View Changed', 'Switched to list view');
-}
-
-function finderSelectFavorite(element, folder) {
-    document.querySelectorAll('.favorites-item').forEach(item => {
-        item.classList.remove('active');
-    });
-    element.classList.add('active');
-
-    const pathInput = document.querySelector('.finder-path');
-    switch (folder) {
-        case 'desktop':
-            pathInput.value = '/Users/WebOS/Desktop';
-            break;
-        case 'documents':
-            pathInput.value = '/Users/WebOS/Documents';
-            break;
-        case 'downloads':
-            pathInput.value = '/Users/WebOS/Downloads';
-            break;
-        case 'pictures':
-            pathInput.value = '/Users/WebOS/Pictures';
-            break;
-        case 'movies':
-            pathInput.value = '/Users/WebOS/Movies';
-            break;
-        case 'music':
-            pathInput.value = '/Users/WebOS/Music';
-            break;
-        case 'applications':
-            pathInput.value = '/Applications';
-            break;
-        case 'utilities':
-            pathInput.value = '/Applications/Utilities';
-            break;
-    }
-}
-
-function finderSelectFile(element) {
-    if (event && (event.shiftKey || event.metaKey || event.ctrlKey)) {
-        element.classList.toggle('selected');
-    } else {
-        document.querySelectorAll('.file-item').forEach(item => {
-            item.classList.remove('selected');
-        });
-        element.classList.add('selected');
-    }
-}
+function previewOpen() { showNotification('Preview', 'Open image'); }
+function previewZoomIn() { showNotification('Preview', 'Zoom +'); }
+function previewZoomOut() { showNotification('Preview', 'Zoom -'); }
+function previewFit() { showNotification('Preview', 'Fit'); }
+function previewRotate() { showNotification('Preview', 'Rotate'); }
+function previewCrop() { showNotification('Preview', 'Crop'); }
 
 function minimizeAllWindows() {
-    showNotification('Minimize All', 'All windows minimized to dock');
+    for (const id of wm.windows.keys()) {
+        if (wm.isOpen(id)) wm.minimize(id);
+    }
+    showNotification('Windows', 'All minimized');
 }
 
 function showAllWindows() {
-    showNotification('Show All', 'All windows restored from dock');
+    for (const id of wm.windows.keys()) {
+        if (wm.isMinimized(id)) wm.restore(id);
+    }
+    showNotification('Windows', 'All restored');
 }
 
+/* ---------- Keyboard ---------- */
 function setupKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
-        const isCommandKey = e.metaKey || e.ctrlKey;
+        const meta = e.metaKey || e.ctrlKey;
 
-        if (isCommandKey && e.code === 'Space') {
+        if (meta && e.code === 'Space') {
             e.preventDefault();
             activateSpotlight();
         }
-
-        if (isCommandKey && e.key === 'w') {
+        if (meta && e.key === 'w') {
             e.preventDefault();
-            if (currentWindow && openWindows.has(currentWindow)) {
-                closeApp(currentWindow);
-            }
+            if (wm.focusedId) closeApp(wm.focusedId);
         }
-
-        if (isCommandKey && e.key === 'm') {
+        if (meta && e.key === 'm') {
             e.preventDefault();
-            if (currentWindow && openWindows.has(currentWindow)) {
-                minimizeApp(currentWindow);
-            }
+            if (wm.focusedId) minimizeApp(wm.focusedId);
         }
-
         if (e.key === 'Escape') {
             deactivateSpotlight();
-            document.querySelectorAll('.menu-dropdown').forEach(menu => {
-                menu.classList.remove('active');
-            });
+            document.querySelectorAll('.menu-dropdown').forEach(m => m.classList.remove('active'));
         }
     });
 }
 
 document.addEventListener('click', (e) => {
     if (!e.target.closest('.menu-item') && !e.target.closest('.menu-dropdown')) {
-        document.querySelectorAll('.menu-dropdown').forEach(menu => {
-            menu.classList.remove('active');
-        });
+        document.querySelectorAll('.menu-dropdown').forEach(m => m.classList.remove('active'));
     }
-
     if (!e.target.closest('#spotlight') && !e.target.closest('.menu-item')) {
         deactivateSpotlight();
     }
 });
 
+/* ---------- Zen Assistant ---------- */
+function zenSend() {
+    const input = document.getElementById('zenInput');
+    const text = input.value.trim();
+    if (!text) return;
+
+    appendZenMessage(text, 'user');
+    input.value = '';
+
+    const status = document.getElementById('zenStatus');
+    status.textContent = 'Thinking...';
+    status.classList.add('thinking');
+
+    //Simple local intent handling (no external AI yet)
+    setTimeout(() => {
+        const reply = zenProcess(text);
+        appendZenMessage(reply, 'assistant');
+        status.textContent = 'Ready';
+        status.classList.remove('thinking');
+
+    })
+}
+
+/* ---------- Boot ---------- */
 window.addEventListener('load', initDesktop);
