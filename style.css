@@ -56,4 +56,47 @@ background:
 #wallpaper.wp-mono{background:linear-gradient(160deg,#0d0d10,#141418 60%,#0a0a0c);}
 
 /* ---------- DESKTOP ICONS ---------- */
-#
+#desktop-icons{position:absolute; inset:0; padding:20px; display:grid; grid-template-columns:repeat(auto-fill, 84px); grid-auto-rows:96px; gap:4px; align-content:start; z-index:1;}
+.dicon{width:84px; height:92px; display:flex; flex-direction:column; align-items:center; gap:6px; padding:8px 4px; border-radius:10px; cursor:pointer;}
+.dicon:hover, .dicon.selected{background:rgba(255,255,255,0.08);}
+.dicon .glyph{width:42px; height:42px; border-radius:11px; display:flex; align-items:center; justify-content:center; font-size:21px; box-shadow:0 6px 16px rgba(0,0,0,0.35);}
+.dicon .lbl{font-size:11.5px; text-align:center; line-height:1.25; color:var(--text-1); text-shadow:0 1px 3px rgba(0,0,0,0.6); max-width:80px;}
+
+/* ---------- CONTEXT MENU ---------- */
+.ctx-menu{position:fixed; z-index:9999; min-width:210px; background:rgba(22,25,34,0.92); backdrop-filter:blur(24px); border:1px solid var(--panel-border); border-radius:12px; padding:6px; box-shadow:0 20px 50px rgba(0,0,0,0.5); display:none;}
+.ctx-menu.open{display:block;}
+.ctx-item{padding:9px 12px; border-radius:8px; font-size:13px; display:flex; align-items:center; gap:10px; color:var(--text-1);}
+.ctx-item:hover{background:var(--panel-strong);}
+.ctx-sep{height:1px; background:var(--panel-border); margin:5px 4px;}
+
+/* ---------- WINDOWS ---------- */
+#window-layer{position: absolute; inset: 0; z-index: 5;}
+.window{
+  position: absolute; min-width: 340px; min-height: 220px;
+  background: rgba(16,18,26,0.86); backdrop-filter: blur(28px);
+  border: 1px solid rgba(255,255,255,0.09); border-radius: 14px;
+  box-shadow: 0 30px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(0, 0, 0, 0, 2);
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: winOpen 0.22s cubic-bezier(2, 9, 3, 1.15);
+}
+@keyframes winOpen{from{opacity: 0; transform: scale(0.94) translateY(10px);} to{opacity: 1; transform: scale(1) translateY(0);}}
+.window.closing{animation: winClose 0.16s ease forwards;}
+@keyframes winClose{to{opacity: 0; transform: scale(0.95);}}
+.window.inactive{box-shadow: 0 20px 45px rgba(0,0,0,0.4);}
+.window.inactive .titlebar{opacity: 0.65;}
+.window.maximized{border-radius: 0;}
+.titlebar{height: 42px; flex: 0 0 auto; display:flex; align-items: center; padding: 0 10px 0 14px; gap: 10px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.06); cursor: default;}
+.titlebar .tglyph{font-size: 14px;}
+.titlebar .ttitle{font-family: var(--font-display); font-size: 13px; font-weight:500; color: var(--text-1); flex:1; white-space: nowrap; overflow: hidden; text-overflow: hidden; text-overflow: ellipsis;}
+.wctl{display: flex; gap: 7px; margin-left: auto;}
+.wbtn{width: 13px; height: 13px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; color: transparent;}
+.wbtn{width:13px; height: 13px; border-radius: 50%; display:flex; align-items: center; justify-content: center; font-size: 8px; color:transparent;}
+.wbtn:hover{color:rgba(0,0,0,0.55)}
+.wbtn.close{background: #ff5f57;}
+.wbtn.min{background: #febc2a;}
+.wbtn.max{background: #28c840;}
+.window-body{flex: 1; overflow: auto; position: relative;}
+.resize-handle{position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor:nwse-resize; z-index: 2;}
+
+/* ---------- TASKBAR ---------- */
+#taskbar{position: absolute; left: 0; right: 0; bottom: 0;  height: 60px; z-index: 50; display: flex; align-items: center; padding: 0 12px; gap: 10px; background: rgba(14,16,22,0.72); backdrop-filter: blur(30px); border-top: 1px solid rgba(255,255,255,0.08);}
