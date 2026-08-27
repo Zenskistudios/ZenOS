@@ -14,6 +14,19 @@ const APP_REGISTRY = {
     browser:    {name:'Aurora Browse', icon:'🧭', svgKey:'browser', color:'#2fe6c9', system:true, pinned:true},
     texteditor: {name:'Text Editor',  icon:'📝', color:'#ffb35c', system:true, pinned:true},
     notes:      {name:'Notes',        icon:'🗒️', color:'#ffd166', system:true, pinned:false},
-    calculator: {name:'Calculator', icon:'🧮', svgKey:'calc', color:'#4ade80', system:true, pinned:true},
-    calender:   {name:'Calender', icon:'📅',}
-}
+    calculator: {name:'Calculator',   icon:'🧮', svgKey:'calc', color:'#4ade80', system:true, pinned:true},
+    calendar:   {name:'Calendar',     icon:'📅', color:'#ff6b6b', system:true, pinned:false},
+    terminal:   {name:'Terminal',     icon:'⌨️', color:'#0f1117', color2:'#2fe6c9', system:true, pinned:false},
+    settings:   {name:'Settings',     icon:'⚙️', color:'#a7afc0', system:true, pinned:true},
+    taskmanager:{name:'Task Manager', icon:'📊', svgKey:'appmanager', color:'#ff9f5c', system:true, pinned:false},
+    softwarehub:{name:'Software Hub', icon:'🛍️', svgKey:'apps', color:'#7c6cff', system:true, pinned:true},
+    youtube:    {name:'PlayTube',     icon:'▶️', color:'#ff5c5c', system:true, pinned:false},
+    spotify:    {name:'Wavelength',   icon:'🎧', color:'#1ed760', system:true, pinned:false},
+    games:      {name:'Games',        icon:'🎮', color:'#7c6cff', system:true, pinned:false},
+};
+
+
+const SOFTWARE_CATALOG = [
+    {id:'sw-pixelpaint', name:'PixelPaint', cat:'Graphics', icon:'🎨', color:'#ff8fa3', size:'84MB', rating:4.6, desc:'A lightweight raster & vector sketchpad for quick mockups and doodles.'},
+    
+]
