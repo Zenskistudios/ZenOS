@@ -94,8 +94,9 @@ input,textarea{font-family:inherit; color:inherit; background:none; border:none;
 .ctx-sep{height:var(--pixel); background:#000; margin:5px 2px; box-shadow:0 1px 0 var(--line-hi);}
 
 /* ---------- WINDOWS ---------- */
-#window-layer{position:absolute; inset:0; z-index:5;}
+#window-layer{position:absolute; inset:0; z-index:5; pointer-events:none;}
 .window{
+  pointer-events:auto;
   position:absolute; min-width:340px; min-height:220px;
   background:var(--panel);
   border:var(--pixel) solid #000;
