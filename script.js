@@ -281,3 +281,64 @@ function toggleMaximize(id){
 		el.style.left=r.x+'px'; el.style.top=r.y+'px'; el.style.width=r.w+'px'; el.style.height= r.h+'px';
 	}
 }
+function focuswindow(id){
+	activeWinId = id;
+	const w = windows.find(x=>x.id===id); if(w) w.z = ++zTop;
+	document.querySelectorAll('window'). forEach(el=>{
+		if(el.id===id){ el.style.zIndex = zTop; el.classList.remove('inactive'); }
+	});
+	renderTaskbarApps();
+}
+
+function renderWindow(w){
+    const el = document.createElement('div');
+    el.className = 'window';
+    el.id = w.id;
+    el.style.left = w.x+'px'; el.style.top = w.y+'px'; el.style.width = w.w+'px'; el.style.height = w.h+'px'; el.style.zIndex = w.z;
+    el.innerHTML = `
+    <div class="titlebar" data-drag="${w.id}">
+    <span class="tglyph">${iconHtml (w.svgKey, w.icon)}</span>
+    <span class="ttitle">${escapeHtml(w.title)}</span>
+    <div class="wctl">
+	<button class="wbtn min" title="Minimize">–</button>
+	<button class="wbtn max" title="Maximize">▢</button>
+	<button class="wbtn close" title="Close">×</button>
+	</div>
+	</div>
+	<div class="window-body" id="body-${w.id}"></div>
+	<div class="resize-handle"></div>
+	`;
+	windowLayer.appendChild(el);
+
+    el.addEventListener('mousedown', ()=>focusWindow(w.id));
+    el.querySelector('.wbtn.close').addEventListener('click', e=>{e.stopPropagation(); closeWindow(w.id);});
+    el.querySelector('wbtn.min').addEventListener('click', e=> {e.stopPropagation(); minimizeWindow(w.id);});
+	el.querySelector('wbtn.max').addEventListener('click', e=> {e.stopPropagation(); toggleMaximize(w.id);});
+	el.querySelector('titlebar').addEventListener('dblclick', ()=>toggleMaximize(w.id));
+
+	makeDraggable(el, w);
+	makeResizable(el, w);
+
+	renderApplyBody(w);
+}
+
+function makeDraggable(el, w){
+	const bar = el.querySelector('.titlebar');
+	let sx,sy,ox,oy,dragging=false;
+	bar.addEventListener('mousedown', e=>{
+		if(e.target.closest('.wctl')) return;
+		if(w.maximized) return;
+		dragging=true; sx=e.clientX; sy=e.clientY; ox=w.w; oy=w.y;
+		document.body.style.cursor='grabbing';
+	});
+	window.addEventListener('mousemove', e=>{
+		if(!dragging) return;
+		w.x = Math.max(-w.w+120, ox + (e.clientX-sx));
+		w.y = Math.max(0, oy + (e.clientY-sy));
+		el.style.left=w.x+'px'; el.style.top=w.y+'px';
+	});
+	window.addEventListener('mouseup', ()=>{ dragging=false; document.body.style.cursor=''; });
+}
+function makeResizable(el, w){
+	const handle= el.querySelector('.resize-handle');
+}
