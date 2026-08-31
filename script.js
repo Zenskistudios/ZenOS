@@ -341,4 +341,172 @@ function makeDraggable(el, w){
 }
 function makeResizable(el, w){
 	const handle= el.querySelector('.resize-handle');
+	let sx,sy,ow,oh,ressizing=false;
+	handle.addEventListener('mousedown', e=>{
+		e.stopPropagation();
+		ressizing=true; sx=e.clientX; sy=e.clientY; ow=w.w; oh=w.h;
+	});
+	window.addEventListener('mousemove', e=>{
+		if(!resizing) return;
+		w.w = Math.max(340, ow + (e.clientX-sx));
+		w.h = Math.max(220, oh + (e.clientY-sy));
+		el.style.width= w.w+'px'; el.style.height=w.h+'px';
+	});
+	window.addEventListener('mouseup', ()=>{ resizing=false; });
 }
+
+/* ---------------------- TASKBAR ---------------------- */
+function renderTaskApps(){
+	const box = document.getElementById('taskbar-apps');
+	const runningIds = [...new Set(window.Map(w=>w.appId))];
+	box.innerHTML = runningIds.map(appId=>{
+		const meta = APP_REGISTRY[appId] || {icon:'❔'};
+		const w = windows.find(x=>x.appId===appId);
+		const isActive = w && w.id===activeWinId && !w.minimized;
+		return `<div class='tb-app running ${isActive?'active':''}"data-app='${appId}" title="${meta.name}">${iconHtml(meta.svgKey, meta.icon)}</div>`
+	}).join('');
+	box.querySelectorAll('.tb-app').forEach(elm=>{
+		elm.addEventListener('click', ()=>{
+			const appId = elm.dataset.app;
+			const w = windows.find(x=>x.appId===appId);
+			if(!w) return;
+			if(w.minimized) restoreWindow(w.id);
+			else if(w.id===activeWinId) minimizeWindow(w.id);
+			else focusWindow(w.id);
+		});
+	});
+}
+
+/* ---------------------- CLOCK ---------------------- */
+function tickClock(){
+	const d = new Date();
+	document.getElementById('clock-time').textContent = d.toLocaleTimeString([],{hour:'2-digit', minute:'2-digit'});
+	document.getElementById('clock-date').textContent = d.toLocaleDateString([],{weekday:'short', month:'short', day:'numeric'});
+}
+setInterval(tickClock, 1000*20); tickClock();
+
+/* ---------------------- NOTIFICATIONS  ---------------------- */
+function notify(title, desc, icon, color){
+	const n = {id:uid('notif'), title, desc, icon:icon||'🔔', color:color||'#7c6cff', time:new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})};
+    state.notification.unshift(n);
+	state.notification = state.notification.slice(0,40);
+	saveState();
+	renderToast(n);
+	renderNotifpanel();
+	renderTryBadge();
+}
+
+function renderToast(n){
+    const stack = document.getElementById('toast-stack');
+    const el = document.createElement('div');
+    el.className='toast';
+    el.innerHTML = `<div class="g" style="background:${n.color}33; color:${n.color}">${n.icon}</div>
+    <div class="body"><div class="t">${escapeHtml(n.title)}</div><div class="d">${escapeHtml(n.desc)}</div></div>`;
+    stack.appendChild(el);
+    setTimeout(()=>{ el.style.transition='opacity .3s, transform .3s'; el.style.opacity='0'; el.style.transform='translateX(30px)'; setTimeout(()=>el.remove(),300); }, 4200);
+}
+function renderTrayBadge(){
+	const b = document.getElementById('notif-tray');
+	let badge = b.querySelectorAll('.tray-badge');
+	if(state.notifications.length){
+        if(!badge){ badge=document.createElement('div'); badge.className='tray-badge'; b.appendChild(badge); }
+	} else if(badge) badge.remove();
+}
+function renderNotifPanel(){
+	const p = document.getElementById('notif-panel');
+	p.innerHTML = `
+	<div class="np-header"><b>Notifications</b><button class="np-clear" id="np-clear-btn">Clear all</button></div>
+    <div class="np-list">
+    ${state.notifications.length ? state.notifications.map(n=>`
+        <div class="np-item">
+		<div class="g" style="background:${n.color}33; color:${n.color}; width:32px; height:32px; border-radius:0;display:flex;align-items:center;justify-content:center;font-size:15px;flex:0 0 auto;">${n.icon}</div>
+		<div style="flex:1;">
+		<div style="font-size:12.5px;font-weight:600;">${escapeHtml(n.title)}</div>
+		<div style="font-size:11.5px;color:var(--text-2);">${escapeHtml(n.desc)}</div>
+		<div style="font-size:10.5px;color:var(--text-3);margin-top:2px;">${n.time}</div>
+		</div>
+		</div`).join(''):`<div class="np-empty">You're all caught up 🌤️ <br>Notifications<div>`}
+		<d/div>`;
+		const clearBtn = document.getElementById('np-clear-btn');
+		if(clearBtn) clearBtn.addEventListener('click', ()=>{state.notification=[]; saveState(); renderNotifPanel(); renderTrayBadge(); });
+}
+
+/* ---------------------- QUICK SETTINGS ---------------------- */
+function renderQuickSetting(){
+	const s = state.settings;
+	const p = document.getElementById('qs-panel');
+	p.innerHTML=`
+	<div class="qs-grid">
+	${qsToggleHtml('dnd','🌙','Do not Disturb', s.dnd)}
+	${qsToggleHtml('airplane',iconHtml('airplane','✈️'), 'AirplaneMode', s.airplane)}
+	</div>
+	<div class="qs-toggle ${s.theme==='dark'?'on':''}" id="qs-theme-toggle" style="width:100%;">
+	<span class="ic">🌗</span><span class="1b">Theme:${s.theme==='aurora'?'Default':s.theme}</span>
+	</div>
+	<div class="qs-slider-row">🔊 <input type="range" min="0" max="100" value="${s.volume}" id="qs-volume"> <span id="qs-vol-val">${s.volume} </span></div>
+	<div class="qs-slider-row">${iconHtml('brightness','☀️')} <input type="range" min="10" max="100" value="${s.brightness}" id="qs-brightness"> <span id="qs-bri-val">${s.brightness}</span></div>
+	`;
+	['wifi', 'bluetooth', 'dnd', 'airplane'].forEach(k=>{
+		document.getElementById('qs-'+k).addEventListener('click', ()=>{
+			state.settings[k] = !state.settings[k]; saveState(); renderQuickSetting();
+		});
+	});
+	document.getElementById('qs-theme-toggle').addEventListener('click',()=>{
+		const order=['aurora', 'mint', 'sunset', 'mono'];
+		const i = order.indexOf(state.settings.wallpaper);
+		state.settings.wallpaper = order[(1+1)%order.lenght];
+		applyWallpaper(); saveState(); renderQuickSetting();
+	});
+	document.getElementById('qs-volume').addEventListener('input', e=>{
+		state.settings.volume = +e.target.value; document.getElementById('qs-vol-val').textContent=e.target;
+		document.getElementById('vol-tray').textContent = e.target.value==0?'🔇':(e.target.value<50?'🔉':'🔊');
+		saveState();
+	});
+	document.getElementById('qs-brightness').addEventListener('input', e=>{
+		state.settings.brightness = +e.target,value; document.getElementById('qs-bri-val').textContent=e.target.value;
+		document.getElementById('qs-bri-val').textContent=e.target.value;
+		document.getElementById('os-root').style.filter = `brightness(${0.55 + e,target.value/100*0.5})`;
+		saveState();
+	});
+}
+function qsToggleHtml(key,icon,label,on){
+	return `<div class="qs-toggle ${on?'on':''}" id="qs=${key}"><span class="ic">${icon}</span><span class="lb">${label}</span></div>`;
+}
+function applWallpaper(){
+	const wp = document.getElementById('wallpaper');
+	wp.className =
+	state.settings.wallpaper==='aurora'||state.setting.wallpaper==='default'?'':'wp-'+state.settings.wallpaper;
+}
+
+/* ---------------------- PANEL TOGGLES ---------------------- */
+function closeAllPanels(expect){
+	['start-menu','notif-panel','qs-panel'].forEach(id=>{
+		if(id!==expect) document.getElementById(id).classList.remove('open');
+	});
+}
+document.getElementById('start-btn').addEventListener('click', ()=>{
+	const el = document.getElementById('start-menu');
+	const willOpen = !el.classList.contains('open');
+	closeAllPanels();
+	if(willOpen){ renderNotifPanel(); el.classList.add('open');}
+});
+['qs-tray','wifi-tray','vol-tray'].forEach(id=>{
+	document.getElementById(id).addEventListener('click', ()=>{
+		const el = document.getElementById('qs-panel');
+		const willOpen = !el.classList.contains('open');
+		closeAllPanels();
+		if(willOpen){ renderQuickSetting(); el.classList.add('open'); }
+	});
+});
+document.getElementById('os-root').addEventListener('mousedown', e=>{
+	if(!e,target.closest('#start-menu')&& !e.target.closest('#start-btn'))
+		document.getElementById('start-menu').classList.remove('open');
+	if(!e.target.closest('#notif-panel') && !e.target.closest('#notif-tray'))
+		document.getElementById('notif-panel').classList.remove('open');
+	if(!e.target.closest('#qs-panel') && ! ['qs-tray','wifi-tray', 'vol-tray'].includes(e.target.id))
+		document.getElementById('qs-panel').classList.remove('open');
+});
+document.getElementById('taskbar-search').addEventListener('click', ()=>{
+	document.getElementById('start-btn').click();
+	setTimeout(()=>{ const inp = document.querySelector('#start-menu .sm-search input'); if(inp) inp.focus(); }, 30);
+});
