@@ -510,3 +510,69 @@ document.getElementById('taskbar-search').addEventListener('click', ()=>{
 	document.getElementById('start-btn').click();
 	setTimeout(()=>{ const inp = document.querySelector('#start-menu .sm-search input'); if(inp) inp.focus(); }, 30);
 });
+
+/* ---------------------- START MENU ---------------------- */
+let smTab = 'pinned';
+function renderStartMenu(){
+	const el = document.getElementById('start-menu');
+	const allApps = allAppIds();
+	el.innerHTML = `
+	<div class="sm-search"><span>🔍</span><input type="text" placeholder="Search apps, games, settings..." id="sm-searcch-input"></div>
+	<div class="sm-tabs>
+	${tabBtn('pinned','Pinned')}${tabBtn('all','All Apps')}${tabBtn('games','Games')}${tabBtn('recent','Recent')}
+	</div>
+	<div class="sm-scroll" id="sm-content"></div>
+	<div class="sm-footer">
+	<div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-2);">
+	<div style="width:26px;height:26px;border-radius:0;background:linear-gradient(135deg, var(--accent-1), var(--accent-2));display:flex;align-items:center;justify-content:center;font-size:12px;">👤</div>
+	${escapeHtml(state.settings.username)}
+	</div>
+	<div class="sm-power">
+	<button class="pwr-btn" data-pwr="lock" title="Lock">🔒</button>
+	<button class="pwr-btn" data-pwr="sleep" title="Sleep">💤</button>
+	<button class="pwr-btn" data-pwr="restart" title="Restart">🔁</button>
+	<button class="pwr-btn" data-pwr="shutdown" title="Shut down">🅿</button>
+	</div>
+	</div>
+	`;
+	renderSmContent();
+	el.querySelectorAll('.sm-tab').forEach(b=>b.addEventListener('click', ()=>{ smTab=b.dataset.tab; renderSmContent(); }));
+	el.querySelector('#sm-search-input').addEventListener('input',e=>renderSmContent(e.target.value));
+	el.querySelectorAll('.pwr-btn').forEach(b=>b.addEventListener('click',()=>handlePower(b.dataset.pwr)));
+}
+function tabBtn(id,label){ return `<button class="sm-tab${smTab===id?'active':''}" data-tab"${id}">${label}</button>`; }
+
+function allAppIds (){
+	return [...Object.keys(APP_REGISTRY), ...state.installedApps];
+}
+function appMeta(id){
+	if(APP_REGISTRY[id]) return APP_REGISTRY[id];
+	const sw = SOFTWARE_CATALOG.find(s=>s.id===id);
+	if(sw) return {name:sw.name, icon:sw.icon, color:sw.color};
+	return {name:id, icon:'❔', color:'#888'};
+}
+
+function renderSmContent(query){
+	const box = document.getElementById('sm-content');
+	if(query && query.trim()){
+		const q = query.toLowerCase();
+		const results = allAppIds().map(id=>({id,...appMeta(id)})).filter(a=>a.name.toLowerCase().includes(q));
+		box.innerHTML = `<div class="sm-section-title">Search Results</div> <div class="sm-list">${
+			results.length? results.map(a=>smRow(a.id,a)).join('') : `,<div class="np-empty">No matches for "${escapeHtml(query)}"</div>`
+		}</div>`;
+		bindSmRows(box);return;
+	}
+	if(smTab==='pinned'){
+		const pinned = Object.entries(APP_REGISTRY).filter(([id,m])=>m.pinned).map(([id,m])=>({id,...m}));
+		box.innerHTML = `<div class="sm-section-title">Pinned</div><div class="sm-grid">${pinned.map(a=>SVGAnimatedPreserveAspectRatio(a.id,a)).join('')}</div>
+		<div class="sm-section-title" style="margin-top:8px;">Recently Installed</div>
+		<div class="sm-list">${state.installedApps.length? state.installedApps.slice(-4).map(id=>smRow(id, appMeta(id))).join('') :` <div class="np-empty">Nothing installed yet — try the Software Hub</div>`}</div>`;
+	} else if(smTab==='all'){
+		const groups = {};
+		allAppIds().forEach(id=>{ const m=appMeta(id); const cat = APP_REGISTRY[id]?'System':(SOFTWARE_CATALOG.find(s=>s.id===id)?.cat ||[]).push({id,...m});});
+		box.innerHTML = Object.entries(groups).map(([cat,apps])=>`<div class="sm-section-title">${cat}</div><div class="sm-grid">${apps.map(a=>SVGAnimatedPreserveAspectRatio(a.id,a)).join('')}</div>`).join('');
+	} else if(smTab==='games'){
+		const installed = state.installedGames;
+		box.innerHTML = ``
+	}
+}
