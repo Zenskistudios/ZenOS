@@ -422,7 +422,7 @@ async function spotifyHandleCallback(){
 }
 function spotifyToken(){ try{ const token=JSON.parse(localStorage.getItem(SPOTIFY_TOKEN_KEY)||'null'); return token&&token.expires_at>Date.now()+30000?token:null; }catch(error){ return null; } }
 function spotifyLogout(){ localStorage.removeItem(SPOTIFY_TOKEN_KEY); }
-async function spotifyApi(path, options){ const token=spotifyToken(); if(!token) throw new Error('Log in to Spotify first'); const response=await fetch('https://api.spotify.com/v1/'+path,{...(options||{}),headers:{...(options&&options.headers||{}),Authorization:'Bearer '+token.access_token}}); if(!response.ok) throw new Error('Spotify API request failed ('+response.status+')'); return response.json(); }
+async function spotifyApi(path, options){ const token=spotifyToken(); if(!token) throw new Error('Log in to Spotify first'); const response=await fetch('https://api.spotify.com/v1/'+path,{...(options||{}),headers:{...(options&&options.headers||{}),Authorization:'Bearer '+token.access_token}}); if(!response.ok){ let detail=''; try{ const payload=await response.json(); detail=payload.error?.message||''; }catch(error){} throw new Error('Spotify API request failed ('+response.status+')'+(detail?': '+detail:'')); } return response.json(); }
 
 function uid(p){ return p + '_' + Math.random().toString(36).slice(2,9); }
 function nowStr(){ return new Date().toLocaleString(); }
@@ -1927,9 +1927,11 @@ function renderSpotify(body, w){
   }
   async function searchSpotify(){
     const input=body.querySelector('#sp-api-search'); const result=body.querySelector('#sp-api-results'); if(!input||!result) return;
+    const query=input.value.trim();
+    if(!query){ result.innerHTML='<div class="np-empty">Enter an artist, track, or album to search Spotify.</div>'; input.focus(); return; }
     if(!spotifyToken()){ result.innerHTML='<div class="np-empty">Log in with Spotify to search the Web API.</div>'; return; }
     result.innerHTML='<div class="np-empty">Searching Spotify...</div>';
-    try{ const data=await spotifyApi('search?type=track&limit=10&q='+encodeURIComponent(input.value)); result.innerHTML=data.tracks.items.map(track=>`<div class="sm-row" data-api-track="${track.id}" style="cursor:pointer;"><div class="g">🎵</div><div class="n"><div>${escapeHtml(track.name)}</div><div style="font-size:10px;color:var(--text-3);">${escapeHtml(track.artists.map(artist=>artist.name).join(', '))} · ${escapeHtml(track.album.name)}</div></div></div>`).join('')||'<div class="np-empty">No tracks found</div>'; result.querySelectorAll('[data-api-track]').forEach(row=>row.addEventListener('click',()=>{const track=data.tracks.items.find(item=>item.id===row.dataset.apiTrack); state.customTracks=state.customTracks||[]; if(!state.customTracks.find(item=>item.id===track.id)) state.customTracks.push({id:track.id,resourceType:'track',title:track.name,artist:track.artists.map(artist=>artist.name).join(', '),album:track.album.name,color:'#1ed760'}); saveState(); inst.nowPlaying=track.id; draw();})); }catch(error){ result.innerHTML=`<div class="np-empty">${escapeHtml(error.message)}</div>`; }
+    try{ const data=await spotifyApi('search?type=track&limit=10&q='+encodeURIComponent(query)); result.innerHTML=data.tracks.items.map(track=>`<div class="sm-row" data-api-track="${track.id}" style="cursor:pointer;"><div class="g">🎵</div><div class="n"><div>${escapeHtml(track.name)}</div><div style="font-size:10px;color:var(--text-3);">${escapeHtml(track.artists.map(artist=>artist.name).join(', '))} · ${escapeHtml(track.album.name)}</div></div></div>`).join('')||'<div class="np-empty">No tracks found</div>'; result.querySelectorAll('[data-api-track]').forEach(row=>row.addEventListener('click',()=>{const track=data.tracks.items.find(item=>item.id===row.dataset.apiTrack); state.customTracks=state.customTracks||[]; if(!state.customTracks.find(item=>item.id===track.id)) state.customTracks.push({id:track.id,resourceType:'track',title:track.name,artist:track.artists.map(artist=>artist.name).join(', '),album:track.album.name,color:'#1ed760'}); saveState(); inst.nowPlaying=track.id; draw();})); }catch(error){ result.innerHTML=`<div class="np-empty">${escapeHtml(error.message)}</div>`; }
   }
   function addCustomTrack(){
     const inp = body.querySelector('#sp-add-input'); if(!inp) return;
