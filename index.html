@@ -488,15 +488,19 @@ function loadSpotifyWebPlayer(){
   return spotifyWebPlayerPromise;
 }
 async function spotifyPlayTrack(trackId){
+  return spotifyPlayResource(trackId,'track');
+}
+async function spotifyPlayResource(resourceId, resourceType){
   const player=await loadSpotifyWebPlayer();
   if(!spotifyWebDeviceId) throw new Error('Spotify player device is not ready');
   await spotifyApi('me/player',{method:'PUT',body:JSON.stringify({device_ids:[spotifyWebDeviceId],play:true})});
-  await spotifyApi('me/player/play?device_id='+encodeURIComponent(spotifyWebDeviceId),{method:'PUT',body:JSON.stringify({uris:['spotify:track:'+trackId]})});
+  const body=resourceType==='track'?{uris:['spotify:track:'+resourceId]}:{context_uri:'spotify:'+resourceType+':'+resourceId};
+  await spotifyApi('me/player/play?device_id='+encodeURIComponent(spotifyWebDeviceId),{method:'PUT',body:JSON.stringify(body)});
   await player.resume();
 }
 async function hydrateSpotifyArtwork(track){
-  if(track.imageUrl || !spotifyToken() || track.resourceType && track.resourceType!=='track') return track.imageUrl||'';
-  try{ const data=await spotifyApi('tracks/'+encodeURIComponent(track.id)); track.imageUrl=data.album?.images?.[0]?.url||''; saveState(); return track.imageUrl; }catch(error){ return ''; }
+  if(track.imageUrl || !spotifyToken()) return track.imageUrl||'';
+  try{ const endpoint=track.resourceType==='album'?'albums/':'tracks/'; const data=await spotifyApi(endpoint+encodeURIComponent(track.id)); track.imageUrl=track.resourceType==='album'?(data.images?.[0]?.url||''):(data.album?.images?.[0]?.url||''); saveState(); return track.imageUrl; }catch(error){ return ''; }
 }
 
 function uid(p){ return p + '_' + Math.random().toString(36).slice(2,9); }
@@ -1961,6 +1965,7 @@ function renderSpotify(body, w){
         <div class="side-nav wl-sidebar">
           <div class="wl-nav-label">Your Library</div>
           <div class="wl-nav-item ${inst.tab==='home'?'active':''}" data-t="home"><span class="wl-nav-icon">⌂</span>Home</div>
+          <div class="wl-nav-item ${inst.tab==='albums'?'active':''}" data-t="albums"><span class="wl-nav-icon">▣</span>Albums</div>
           <div class="wl-nav-item ${inst.tab==='liked'?'active':''}" data-t="liked"><span class="wl-nav-icon">♥</span>Liked Songs</div>
           <div class="wl-nav-label" style="margin-top:18px;">Zen Music</div>
           <div class="wl-nav-item ${inst.tab==='search'?'active':''}" data-t="search"><span class="wl-nav-icon">⌕</span>Spotify Search</div>
@@ -1980,6 +1985,10 @@ function renderSpotify(body, w){
     if(inst.tab==='home'){
       c.innerHTML = `<div class="wl-heading">Good evening</div><div class="wl-section-title">Your Library</div><div id="sp-tracklist">${allTracks().map(trackRow).join('')}</div>`;
       bindTracks(c);
+    } else if(inst.tab==='albums'){
+      const albums=(state.customTracks||[]).filter(item=>item.resourceType==='album');
+      c.innerHTML=`<div class="wl-heading">Albums</div><div class="grid-cards" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));">${albums.length?albums.map(albumCard).join(''):'<div class="np-empty">Search for an album to add it here.</div>'}</div>`;
+      c.querySelectorAll('[data-play]').forEach(el=>el.addEventListener('click',async()=>{inst.nowPlaying=el.dataset.play;draw();if(spotifyToken()){try{await spotifyPlayResource(inst.nowPlaying,'album');}catch(error){notify('Album playback unavailable',error.message,'⚠️','#ffb35c');}}}));
     } else if(inst.tab==='liked'){
       const liked = allTracks().filter(t=>(state.likedTracks||[]).includes(t.id));
       c.innerHTML = `<div class="wl-heading">Liked Songs</div><div>${liked.length?liked.map(trackRow).join(''):'<div class="np-empty">No liked songs yet — heart a track to save it</div>'}</div>`;
@@ -1998,7 +2007,7 @@ function renderSpotify(body, w){
       c.querySelector('#sp-add-btn').addEventListener('click', addCustomTrack);
       c.querySelector('#sp-add-input').addEventListener('keydown', e=>{ if(e.key==='Enter') addCustomTrack(); });
     } else if(inst.tab==='search'){
-      c.innerHTML=`<div class="wl-heading">Search</div><div class="wl-form"><input class="search" id="sp-api-search" placeholder="What do you want to play?"><button class="wl-button" id="sp-api-search-btn">Search</button></div><div id="sp-api-results" style="margin-top:12px;"></div>`;
+      c.innerHTML=`<div class="wl-heading">Search</div><div class="wl-form"><select id="sp-api-type" style="background:var(--wl-surface-2);color:#fff;border:1px solid #3a3a3a;padding:11px;"><option value="track">Tracks</option><option value="album">Albums</option></select><input class="search" id="sp-api-search" placeholder="What do you want to play?"><button class="wl-button" id="sp-api-search-btn">Search</button></div><div id="sp-api-results" style="margin-top:12px;"></div>`;
       c.querySelector('#sp-api-search-btn').addEventListener('click', searchSpotify);
       c.querySelector('#sp-api-search').addEventListener('keydown', event=>{if(event.key==='Enter') searchSpotify();});
     }
@@ -2009,8 +2018,18 @@ function renderSpotify(body, w){
     if(!query){ result.innerHTML='<div class="np-empty">Enter an artist, track, or album to search Spotify.</div>'; input.focus(); return; }
     if(!spotifyToken()){ result.innerHTML='<div class="np-empty">Log in with Spotify to search the Web API.</div>'; return; }
     result.innerHTML='<div class="np-empty">Searching Spotify...</div>';
-    try{ const data=await spotifyApi('search?type=track&limit=10&q='+encodeURIComponent(query)); result.innerHTML=data.tracks.items.map(track=>`<div class="wl-row" data-api-track="${track.id}"><div class="wl-cover">${track.album.images?.[2]?.url?`<img src="${escapeHtml(track.album.images[2].url)}" alt="">`:'♪'}</div><div><div class="wl-track-title">${escapeHtml(track.name)}</div><div class="wl-track-meta">${escapeHtml(track.artists.map(artist=>artist.name).join(', '))} · ${escapeHtml(track.album.name)}</div></div></div>`).join('')||'<div class="np-empty">No tracks found</div>'; result.querySelectorAll('[data-api-track]').forEach(row=>row.addEventListener('click',()=>{const track=data.tracks.items.find(item=>item.id===row.dataset.apiTrack); state.customTracks=state.customTracks||[]; if(!state.customTracks.find(item=>item.id===track.id)) state.customTracks.push({id:track.id,resourceType:'track',title:track.name,artist:track.artists.map(artist=>artist.name).join(', '),album:track.album.name,imageUrl:track.album.images?.[0]?.url||'',color:'#1ed760'}); saveState(); inst.nowPlaying=track.id; draw();})); }catch(error){ result.innerHTML=`<div class="np-empty">${escapeHtml(error.message)}</div>`; }
+    try{
+      const type=body.querySelector('#sp-api-type').value; const data=await spotifyApi('search?type='+type+'&limit=10&q='+encodeURIComponent(query));
+      if(type==='album'){
+        result.innerHTML=data.albums.items.map(album=>`<div class="wl-row" data-api-album="${album.id}"><div class="wl-cover">${album.images?.[2]?.url?`<img src="${escapeHtml(album.images[2].url)}" alt="">`:'▣'}</div><div><div class="wl-track-title">${escapeHtml(album.name)}</div><div class="wl-track-meta">${escapeHtml(album.artists.map(artist=>artist.name).join(', '))} · ${escapeHtml(album.release_date||'')}</div></div></div>`).join('')||'<div class="np-empty">No albums found</div>';
+        result.querySelectorAll('[data-api-album]').forEach(row=>row.addEventListener('click',()=>{const album=data.albums.items.find(item=>item.id===row.dataset.apiAlbum); state.customTracks=state.customTracks||[]; const saved={id:album.id,resourceType:'album',title:album.name,artist:album.artists.map(artist=>artist.name).join(', '),album:album.name,imageUrl:album.images?.[0]?.url||'',color:'#1ed760'}; const index=state.customTracks.findIndex(item=>item.id===album.id); if(index<0) state.customTracks.push(saved); else state.customTracks[index]=saved; saveState(); inst.nowPlaying=album.id; inst.nowPlayingType='album'; draw();}));
+      } else {
+        result.innerHTML=data.tracks.items.map(track=>`<div class="wl-row" data-api-track="${track.id}"><div class="wl-cover">${track.album.images?.[2]?.url?`<img src="${escapeHtml(track.album.images[2].url)}" alt="">`:'♪'}</div><div><div class="wl-track-title">${escapeHtml(track.name)}</div><div class="wl-track-meta">${escapeHtml(track.artists.map(artist=>artist.name).join(', '))} · ${escapeHtml(track.album.name)}</div></div></div>`).join('')||'<div class="np-empty">No tracks found</div>';
+        result.querySelectorAll('[data-api-track]').forEach(row=>row.addEventListener('click',()=>{const track=data.tracks.items.find(item=>item.id===row.dataset.apiTrack); state.customTracks=state.customTracks||[]; if(!state.customTracks.find(item=>item.id===track.id)) state.customTracks.push({id:track.id,resourceType:'track',title:track.name,artist:track.artists.map(artist=>artist.name).join(', '),album:track.album.name,imageUrl:track.album.images?.[0]?.url||'',color:'#1ed760'}); saveState(); inst.nowPlaying=track.id; draw();}));
+      }
+    }catch(error){ result.innerHTML=`<div class="np-empty">${escapeHtml(error.message)}</div>`; }
   }
+  function albumCard(album){ return `<div class="card" data-play="${album.id}" style="background:var(--wl-surface-2);border:0;box-shadow:none;cursor:pointer;"><div style="aspect-ratio:1;background:#303030;margin-bottom:10px;">${album.imageUrl?`<img src="${escapeHtml(album.imageUrl)}" alt="" style="width:100%;height:100%;object-fit:cover;">`:'▣'}</div><div class="wl-track-title">${escapeHtml(album.title)}</div><div class="wl-track-meta">${escapeHtml(album.artist)}</div></div>`; }
   function addCustomTrack(){
     const inp = body.querySelector('#sp-add-input'); if(!inp) return;
     const raw = inp.value.trim(); if(!raw) return;
@@ -2035,7 +2054,7 @@ function renderSpotify(body, w){
     </div>`;
   }
   function bindTracks(c){
-    c.querySelectorAll('[data-play]').forEach(el=>el.addEventListener('click', async e=>{ if(e.target.dataset.like) return; inst.nowPlaying = el.dataset.play; drawTabContent(); drawPlayer(); if(spotifyToken()){ try{ await spotifyPlayTrack(inst.nowPlaying); }catch(error){ notify('In-app playback unavailable',error.message,'⚠️','#ffb35c'); } } }));
+    c.querySelectorAll('[data-play]').forEach(el=>el.addEventListener('click', async e=>{ if(e.target.dataset.like) return; inst.nowPlaying = el.dataset.play; drawTabContent(); drawPlayer(); if(spotifyToken()){ try{ const selected=allTracks().find(item=>item.id===inst.nowPlaying); await spotifyPlayResource(inst.nowPlaying,selected?.resourceType||'track'); }catch(error){ notify('In-app playback unavailable',error.message,'⚠️','#ffb35c'); } } }));
     c.querySelectorAll('[data-like]').forEach(el=>el.addEventListener('click', e=>{
       e.stopPropagation();
       state.likedTracks = state.likedTracks || [];
@@ -2054,7 +2073,7 @@ function renderSpotify(body, w){
       p.querySelectorAll('[data-wl-control]').forEach(button=>button.addEventListener('click',async()=>{
         try{
           const action=button.dataset.wlControl;
-          if(action==='play') await spotifyPlayTrack(t.id);
+          if(action==='play') await spotifyPlayResource(t.id,t.resourceType||'track');
           if(action==='pause') await spotifyApi('me/player/pause',{method:'PUT'});
           if(action==='next') await spotifyApi('me/player/next',{method:'POST'});
           if(action==='previous') await spotifyApi('me/player/previous',{method:'POST'});
