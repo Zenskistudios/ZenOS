@@ -463,7 +463,7 @@ async function spotifyHandleCallback(){
 }
 function spotifyToken(){ try{ const token=JSON.parse(localStorage.getItem(SPOTIFY_TOKEN_KEY)||'null'); return token&&token.expires_at>Date.now()+30000?token:null; }catch(error){ return null; } }
 function spotifyLogout(){ localStorage.removeItem(SPOTIFY_TOKEN_KEY); }
-async function spotifyApi(path, options){ const token=spotifyToken(); if(!token) throw new Error('Log in to Spotify first'); const response=await fetch('https://api.spotify.com/v1/'+path,{...(options||{}),headers:{'Content-Type':'application/json',...(options&&options.headers||{}),Authorization:'Bearer '+token.access_token}}); if(!response.ok){ let detail=''; try{ const payload=await response.json(); detail=payload.error?.message||''; }catch(error){} throw new Error('Spotify API request failed ('+response.status+')'+(detail?': '+detail:'')); } return response.status===204?null:response.json(); }
+async function spotifyApi(path, options){ const token=spotifyToken(); if(!token) throw new Error('Log in to Spotify first'); const response=await fetch('https://api.spotify.com/v1/'+path,{...(options||{}),headers:{'Content-Type':'application/json',...(options&&options.headers||{}),Authorization:'Bearer '+token.access_token}}); const text=await response.text(); if(!response.ok){ let detail=text; try{ const payload=JSON.parse(text); detail=payload.error?.message||detail; }catch(error){} throw new Error('Spotify API request failed ('+response.status+')'+(detail?': '+detail:'')); } if(!text.trim()) return null; try{ return JSON.parse(text); }catch(error){ return text; } }
 function loadSpotifyWebPlayer(){
   if(spotifyWebPlayerPromise) return spotifyWebPlayerPromise;
   spotifyWebPlayerPromise=new Promise((resolve,reject)=>{
