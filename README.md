@@ -21,3 +21,15 @@ zen doctor
 ```
 
 System Monitor reads the kernel process table and memory/filesystem counters. Browser APIs and cross-origin iframe services remain subject to normal browser security and embedding limitations.
+
+## PlayTube Deployment
+
+PlayTube is an internal Zen OS app. It searches through the Vercel route `/api/youtube` and plays selected videos with the official YouTube embed inside the Zen OS window. It does not navigate the parent page or open YouTube in a new tab.
+
+Configure this Vercel environment variable before deploying:
+
+```text
+YOUTUBE_API_KEY=your-server-side-key
+```
+
+The key is read only by `api/youtube.js`; it is never included in frontend code. Do not commit `.env` files.

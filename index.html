@@ -270,6 +270,7 @@ input,textarea{font-family:inherit; color:inherit; background:none; border:none;
 .wavelength .wl-native-actions{margin-left:auto;}
 .icon-svg{display:inline-flex; width:1em; height:1em; vertical-align:-0.15em; flex:0 0 auto;}
 .icon-svg svg{width:100%; height:100%; display:block;}
+.asset-icon img{width:100%;height:100%;display:block;object-fit:contain;image-rendering:auto;}
 #os-root input, #os-root textarea, #login-screen input{cursor:text;}
 .resize-handle{cursor:nwse-resize;}
 /* When a character cursor is active, hide the native OS cursor completely —
@@ -363,18 +364,18 @@ body.custom-cursor, body.custom-cursor *{cursor:none !important;}
 const LS_KEY = 'zenos_state_v1';
 
 const APP_REGISTRY = {
-  filemanager:{name:'File Manager', icon:'🗂️', color:'#7c6cff', system:true, pinned:true},
+  filemanager:{name:'File Manager', icon:'🗂️', svgKey:'filemanager', color:'#7c6cff', system:true, pinned:true},
   browser:    {name:'Zen Browse', icon:'🧭', svgKey:'browser', color:'#2fe6c9', system:true, pinned:true},
-  texteditor: {name:'Text Editor',  icon:'📝', color:'#ffb35c', system:true, pinned:true},
-  notes:      {name:'Notes',        icon:'🗒️', color:'#ffd166', system:true, pinned:false},
+  texteditor: {name:'Text Editor',  icon:'📝', svgKey:'texteditor', color:'#ffb35c', system:true, pinned:true},
+  notes:      {name:'Notes',        icon:'🗒️', svgKey:'notes', color:'#ffd166', system:true, pinned:false},
   calculator: {name:'Calculator',   icon:'🧮', svgKey:'calc', color:'#4ade80', system:true, pinned:true},
-  calendar:   {name:'Calendar',     icon:'📅', color:'#ff6b6b', system:true, pinned:false},
-  terminal:   {name:'Terminal',     icon:'⌨️', color:'#0f1117', color2:'#2fe6c9', system:true, pinned:false},
-  settings:   {name:'Settings',     icon:'⚙️', color:'#a7afc0', system:true, pinned:true},
+  calendar:   {name:'Calendar',     icon:'📅', svgKey:'calendar', color:'#ff6b6b', system:true, pinned:false},
+  terminal:   {name:'Terminal',     icon:'⌨️', svgKey:'terminal', color:'#0f1117', color2:'#2fe6c9', system:true, pinned:false},
+  settings:   {name:'Settings',     icon:'⚙️', svgKey:'settings', color:'#a7afc0', system:true, pinned:true},
   taskmanager:{name:'Task Manager', icon:'📊', svgKey:'appmanager', color:'#ff9f5c', system:true, pinned:false},
   softwarehub:{name:'Software Hub', icon:'🛍️', svgKey:'apps', color:'#7c6cff', system:true, pinned:true},
-  youtube:    {name:'PlayTube',     icon:'▶️', color:'#ff5c5c', system:true, pinned:false},
-  spotify:    {name:'Wavelength',   icon:'🎧', color:'#1ed760', system:true, pinned:false},
+  youtube:    {name:'PlayTube',     icon:'▶️', svgKey:'youtube', color:'#ff5c5c', system:true, pinned:false},
+  spotify:    {name:'Wavelength',   icon:'🎧', svgKey:'spotify', color:'#1ed760', system:true, pinned:false},
   games:      {name:'Games',        icon:'🎮', color:'#7c6cff', system:true, pinned:false},
 };
 
@@ -603,7 +604,15 @@ const ICONS = {
 	</g>
 </svg>`,
 };
+const SVG_ASSETS = {
+  filemanager:'manager.svg', browser:'browers.svg', texteditor:'powershell.svg', notes:'Photo.svg',
+  calculator:'calc.svg', calc:'calc.svg', calendar:'calendar.svg', terminal:'terminal.svg', settings:'setting.svg',
+  taskmanager:'appmanager.svg', appmanager:'appmanager.svg', softwarehub:'apps.svg', apps:'apps.svg', youtube:'videoplayer.svg', spotify:'Wavelength.svg',
+  games:'booth.svg', about:'about.svg', battery:'battery.svg', bluetooth:'Bluetooth.svg', airplane:'airplane.svg',
+  brightness:'brightness.svg', notification:'notification.svg', wifi:'wifi.svg', storage:'storage.svg', privacy:'privacy.svg'
+};
 function iconHtml(key, fallback){
+  if(SVG_ASSETS[key]) return `<span class="icon-svg asset-icon"><img src="svg/${encodeURIComponent(SVG_ASSETS[key])}" alt="" draggable="false"></span>`;
   return ICONS[key] ? `<span class="icon-svg">${ICONS[key]}</span>` : (fallback||'');
 }
 
@@ -1903,50 +1912,26 @@ function renderBrowser(body, w){
 
 /* ---- YOUTUBE (PlayTube) — real YouTube thumbnails + real embedded player ---- */
 function renderYoutube(body, w){
-  const inst = winInstances[w.id]; inst.view = inst.view || {screen:'home', videoId:null};
+  const inst = winInstances[w.id]; inst.view = inst.view || {screen:'home', videos:[], query:''};
+  const fallback = VIDEO_CATALOG.map(v=>({id:v.id,title:v.title,channel:v.channel,publishedAt:'',description:'',thumbnail:`https://img.youtube.com/vi/${v.id}/mqdefault.jpg`}));
+  async function loadVideos(query){
+    inst.loading=true; draw();
+    try{ const response=await fetch('/api/youtube?q='+encodeURIComponent(query)); if(!response.ok) throw new Error((await response.json()).error||'YouTube service unavailable'); const data=await response.json(); inst.videos=data.videos||[]; inst.query=query; }
+    catch(error){ inst.error=error.message; inst.videos=inst.videos.length?inst.videos:query?'':fallback; }
+    inst.loading=false; draw();
+  }
   function draw(){
-    if(inst.view.screen==='home'){
-      body.innerHTML = `<div class="app">
-        <div class="app-toolbar"><input class="search" placeholder="Search PlayTube" id="yt-search"></div>
-        <div class="app-body">
-          <div class="grid-cards">${VIDEO_CATALOG.map(v=>videoCard(v)).join('')}</div>
-        </div></div>`;
-      body.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click', ()=>{ inst.view={screen:'watch', videoId:el.dataset.id}; draw(); }));
-      body.querySelector('#yt-search').addEventListener('input', e=>{
-        const q = e.target.value.toLowerCase();
-        body.querySelector('.grid-cards').innerHTML = VIDEO_CATALOG.filter(v=>v.title.toLowerCase().includes(q)).map(videoCard).join('');
-        body.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click', ()=>{ inst.view={screen:'watch', videoId:el.dataset.id}; draw(); }));
-      });
-    } else {
-      const v = VIDEO_CATALOG.find(x=>x.id===inst.view.videoId);
-      body.innerHTML = `<div class="app">
-        <div class="app-toolbar"><button class="pill" id="yt-back">← Back</button></div>
-        <div class="app-body">
-          <div style="width:100%; aspect-ratio:16/9; border-radius:0; overflow:hidden; margin-bottom:14px; background:#000;">
-            <iframe width="100%" height="100%" src="https://www.youtube.com/embed/${v.id}?autoplay=1&rel=0" title="${escapeHtml(v.title)}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display:block;"></iframe>
-          </div>
-          <h3 style="font-family:var(--font-display);">${escapeHtml(v.title)}</h3>
-          <div style="color:var(--text-2); font-size:12px; margin-top:4px;">${escapeHtml(v.cat)} · real YouTube video</div>
-          <div style="display:flex; align-items:center; gap:10px; margin:14px 0;">
-            <div style="width:34px; height:34px; border-radius:0; background:#ff5c5c33; display:flex; align-items:center; justify-content:center;">📺</div>
-            <div style="flex:1;"><b style="font-size:12.5px;">${escapeHtml(v.channel)}</b></div>
-            <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener" class="btn primary" style="text-decoration:none;">Open on YouTube ↗</a>
-          </div>
-        </div></div>`;
-      body.querySelector('#yt-back').addEventListener('click', ()=>{ inst.view={screen:'home'}; draw(); });
+    if(inst.view.screen==='watch'){
+      const v=inst.view.video;
+      body.innerHTML=`<div class="app yt-app"><div class="app-toolbar"><button class="pill" id="yt-back">← Back</button><span style="font-family:var(--font-display);font-size:10px;">PlayTube</span></div><div class="app-body"><div style="width:100%;aspect-ratio:16/9;background:#000;margin-bottom:14px;"><iframe width="100%" height="100%" src="https://www.youtube.com/embed/${encodeURIComponent(v.id)}?autoplay=1&rel=0" title="${escapeHtml(v.title)}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display:block;"></iframe></div><h3 style="font-family:var(--font-display);font-size:13px;line-height:1.5;">${escapeHtml(v.title)}</h3><div style="color:var(--text-2);font-size:11px;margin-top:7px;">${escapeHtml(v.channel)}${v.publishedAt?' · '+new Date(v.publishedAt).toLocaleDateString():''}</div><p style="color:var(--text-2);font-size:11px;line-height:1.6;margin-top:14px;white-space:pre-wrap;">${escapeHtml(v.description||'')}</p></div></div>`;
+      body.querySelector('#yt-back').addEventListener('click',()=>{inst.view={screen:'home'};draw();}); return;
     }
+    const videos=inst.videos.length?inst.videos:fallback;
+    body.innerHTML=`<div class="app yt-app"><div class="app-toolbar" style="gap:8px;"><div style="font-family:var(--font-display);font-size:11px;white-space:nowrap;">▶ PlayTube</div><input class="search" id="yt-search" value="${escapeHtml(inst.query)}" placeholder="Search videos"><button class="btn primary" id="yt-search-btn">Search</button></div><div class="app-body"><div style="display:flex;gap:6px;margin-bottom:14px;"><button class="pill yt-nav active">Home</button><button class="pill yt-nav">Explore</button><button class="pill yt-nav">Trending</button><button class="pill yt-nav">History</button></div>${inst.loading?`<div class="grid-cards">${Array.from({length:6},()=>'<div class="card" style="height:180px;opacity:.5;"></div>').join('')}</div>`:inst.error?`<div class="empty-state"><div class="ic">⚠️</div>${escapeHtml(inst.error)}<button class="pill" id="yt-retry">Retry</button></div>`:`<div class="grid-cards">${videos.map(videoCard).join('')}</div>`}</div></div>`;
+    body.querySelector('#yt-search-btn').addEventListener('click',()=>{const q=body.querySelector('#yt-search').value.trim();if(q)loadVideos(q);}); body.querySelector('#yt-search').addEventListener('keydown',e=>{if(e.key==='Enter')body.querySelector('#yt-search-btn').click();}); body.querySelector('#yt-retry')?.addEventListener('click',()=>loadVideos(inst.query||'JavaScript tutorial')); body.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click',()=>{inst.view={screen:'watch',video:videos.find(v=>v.id===el.dataset.id)};draw();}));
   }
-  function videoCard(v){
-    return `<div class="card yt-card" data-id="${v.id}" style="cursor:pointer; padding:0; overflow:hidden;">
-      <div style="width:100%; aspect-ratio:16/9; position:relative; background:#000;">
-        <img src="https://img.youtube.com/vi/${v.id}/mqdefault.jpg" alt="${escapeHtml(v.title)}" style="width:100%; height:100%; object-fit:cover; display:block;">
-        <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.15); font-size:26px;">▶️</div>
-      </div>
-      <div style="padding:10px;"><div style="font-size:12.5px; font-weight:600; line-height:1.3;">${escapeHtml(v.title)}</div>
-      <div style="font-size:11px; color:var(--text-3); margin-top:4px;">${escapeHtml(v.channel)} · ${escapeHtml(v.cat)}</div></div>
-    </div>`;
-  }
-  draw();
+  function videoCard(v){ return `<div class="card yt-card" data-id="${escapeHtml(v.id)}" style="cursor:pointer;padding:0;overflow:hidden;"><div style="width:100%;aspect-ratio:16/9;background:#000;"><img src="${escapeHtml(v.thumbnail)}" alt="${escapeHtml(v.title)}" style="width:100%;height:100%;object-fit:cover;display:block;"></div><div style="padding:10px;"><div style="font-size:12px;font-weight:600;line-height:1.35;">${escapeHtml(v.title)}</div><div style="font-size:10px;color:var(--text-3);margin-top:5px;">${escapeHtml(v.channel)}${v.publishedAt?' · '+new Date(v.publishedAt).toLocaleDateString():''}</div></div></div>`; }
+  draw(); if(!inst.videos.length) loadVideos('JavaScript tutorial');
 }
 
 /* ---- SPOTIFY (Wavelength) — real Spotify embed player, real audio ---- */
