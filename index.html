@@ -399,6 +399,31 @@ const TRACK_CATALOG = [
   {id:'3BnDvpeuGOj21Ir2aVEtQo', title:'Calm Down', artist:'Rema', album:'Rave & Roses', color:'#4ade80'},
 ];
 
+const SPOTIFY_CLIENT_ID = '79888a0190354e6d8bf1b091d5c5bb4a';
+const SPOTIFY_REDIRECT_URI = 'https://zen-os-inky.vercel.app';
+const SPOTIFY_SCOPES = 'user-read-private user-read-email user-library-read playlist-read-private user-top-read';
+const SPOTIFY_TOKEN_KEY = 'zenos_spotify_token_v1';
+function spotifyRedirectUri(){ return SPOTIFY_REDIRECT_URI; }
+function randomVerifier(){ const bytes=new Uint8Array(64); crypto.getRandomValues(bytes); return [...bytes].map(b=>('0'+b.toString(16)).slice(-2)).join(''); }
+async function spotifyChallenge(verifier){ const digest=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)); let binary=''; new Uint8Array(digest).forEach(b=>binary+=String.fromCharCode(b)); return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+async function spotifyLogin(){
+  const verifier=randomVerifier();
+  sessionStorage.setItem('zenos_spotify_verifier', verifier);
+  const challenge=await spotifyChallenge(verifier);
+  const params=new URLSearchParams({client_id:SPOTIFY_CLIENT_ID,response_type:'code',redirect_uri:spotifyRedirectUri(),code_challenge_method:'S256',code_challenge:challenge,scope:SPOTIFY_SCOPES});
+  window.location.assign('https://accounts.spotify.com/authorize?'+params.toString());
+}
+async function spotifyHandleCallback(){
+  const params=new URLSearchParams(window.location.search); const code=params.get('code'); if(!code) return;
+  const verifier=sessionStorage.getItem('zenos_spotify_verifier'); if(!verifier) return;
+  const response=await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:SPOTIFY_CLIENT_ID,grant_type:'authorization_code',code,redirect_uri:spotifyRedirectUri(),code_verifier:verifier})});
+  if(!response.ok) throw new Error('Spotify authorization failed');
+  const token=await response.json(); token.expires_at=Date.now()+token.expires_in*1000; localStorage.setItem(SPOTIFY_TOKEN_KEY,JSON.stringify(token)); sessionStorage.removeItem('zenos_spotify_verifier'); history.replaceState({},'',window.location.pathname); return token;
+}
+function spotifyToken(){ try{ const token=JSON.parse(localStorage.getItem(SPOTIFY_TOKEN_KEY)||'null'); return token&&token.expires_at>Date.now()+30000?token:null; }catch(error){ return null; } }
+function spotifyLogout(){ localStorage.removeItem(SPOTIFY_TOKEN_KEY); }
+async function spotifyApi(path, options){ const token=spotifyToken(); if(!token) throw new Error('Log in to Spotify first'); const response=await fetch('https://api.spotify.com/v1/'+path,{...(options||{}),headers:{...(options&&options.headers||{}),Authorization:'Bearer '+token.access_token}}); if(!response.ok) throw new Error('Spotify API request failed ('+response.status+')'); return response.json(); }
+
 function uid(p){ return p + '_' + Math.random().toString(36).slice(2,9); }
 function nowStr(){ return new Date().toLocaleString(); }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -1849,12 +1874,18 @@ function renderYoutube(body, w){
 function renderSpotify(body, w){
   const inst = winInstances[w.id]; inst.tab = inst.tab || 'home'; inst.nowPlaying = inst.nowPlaying || (TRACK_CATALOG[0] && TRACK_CATALOG[0].id) || null;
   function allTracks(){ return [...TRACK_CATALOG, ...(state.customTracks||[])]; }
+  function authBar(){
+    const token=spotifyToken();
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--panel-border);font-size:10px;color:var(--text-2);"><span style="width:8px;height:8px;background:${token?'#1ed760':'var(--text-3)'};"></span>${token?'Spotify account connected':'Spotify account not connected'}<span style="flex:1;"></span><button class="pill" id="sp-auth">${token?'Log out':'Log in with Spotify'}</button></div>`;
+  }
   function draw(){
     body.innerHTML = `<div class="app">
+      ${authBar()}
       <div class="side-split" style="flex:1;">
         <div class="side-nav">
           <div class="side-item ${inst.tab==='home'?'active':''}" data-t="home">🏠 Home</div>
           <div class="side-item ${inst.tab==='liked'?'active':''}" data-t="liked">💚 Liked Songs</div>
+          <div class="side-item ${inst.tab==='search'?'active':''}" data-t="search">🔎 Spotify Search</div>
           <div class="side-item ${inst.tab==='add'?'active':''}" data-t="add">➕ Add from Spotify</div>
         </div>
         <div class="app-body" id="sp-content" style="flex:1;"></div>
@@ -1862,6 +1893,7 @@ function renderSpotify(body, w){
       <div style="flex:0 0 auto; border-top:1px solid var(--panel-border); padding:0;" id="sp-player"></div>
     </div>`;
     body.querySelectorAll('[data-t]').forEach(el=>el.addEventListener('click', ()=>{ inst.tab=el.dataset.t; draw(); }));
+    body.querySelector('#sp-auth').addEventListener('click', async ()=>{ if(spotifyToken()){ spotifyLogout(); draw(); } else { try{ await spotifyLogin(); }catch(error){ notify('Spotify login failed',error.message,'⚠️','#ff5c5c'); } } });
     drawTabContent();
     drawPlayer();
   }
@@ -1887,7 +1919,17 @@ function renderSpotify(body, w){
       bindTracks(c);
       c.querySelector('#sp-add-btn').addEventListener('click', addCustomTrack);
       c.querySelector('#sp-add-input').addEventListener('keydown', e=>{ if(e.key==='Enter') addCustomTrack(); });
+    } else if(inst.tab==='search'){
+      c.innerHTML=`<div class="sm-section-title" style="padding-left:0;">Spotify API Search</div><div style="display:flex;gap:8px;"><input class="search" id="sp-api-search" placeholder="Search your Spotify catalog"><button class="btn primary" id="sp-api-search-btn">Search</button></div><div id="sp-api-results" style="margin-top:12px;"></div>`;
+      c.querySelector('#sp-api-search-btn').addEventListener('click', searchSpotify);
+      c.querySelector('#sp-api-search').addEventListener('keydown', event=>{if(event.key==='Enter') searchSpotify();});
     }
+  }
+  async function searchSpotify(){
+    const input=body.querySelector('#sp-api-search'); const result=body.querySelector('#sp-api-results'); if(!input||!result) return;
+    if(!spotifyToken()){ result.innerHTML='<div class="np-empty">Log in with Spotify to search the Web API.</div>'; return; }
+    result.innerHTML='<div class="np-empty">Searching Spotify...</div>';
+    try{ const data=await spotifyApi('search?type=track&limit=10&q='+encodeURIComponent(input.value)); result.innerHTML=data.tracks.items.map(track=>`<div class="sm-row" data-api-track="${track.id}" style="cursor:pointer;"><div class="g">🎵</div><div class="n"><div>${escapeHtml(track.name)}</div><div style="font-size:10px;color:var(--text-3);">${escapeHtml(track.artists.map(artist=>artist.name).join(', '))} · ${escapeHtml(track.album.name)}</div></div></div>`).join('')||'<div class="np-empty">No tracks found</div>'; result.querySelectorAll('[data-api-track]').forEach(row=>row.addEventListener('click',()=>{const track=data.tracks.items.find(item=>item.id===row.dataset.apiTrack); state.customTracks=state.customTracks||[]; if(!state.customTracks.find(item=>item.id===track.id)) state.customTracks.push({id:track.id,resourceType:'track',title:track.name,artist:track.artists.map(artist=>artist.name).join(', '),album:track.album.name,color:'#1ed760'}); saveState(); inst.nowPlaying=track.id; draw();})); }catch(error){ result.innerHTML=`<div class="np-empty">${escapeHtml(error.message)}</div>`; }
   }
   function addCustomTrack(){
     const inp = body.querySelector('#sp-add-input'); if(!inp) return;
@@ -2295,6 +2337,7 @@ setInterval(tickBattery, 60000);
 
 /* ---------------------- INIT ---------------------- */
 function init(){
+  spotifyHandleCallback().catch(error=>notify('Spotify login failed',error.message,'⚠️','#ff5c5c'));
   ensureWallpaperFiles();
   if(window.ZenKernel) ZenKernel.boot(state);
   applyWallpaper();
