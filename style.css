@@ -225,6 +225,13 @@ input,textarea{font-family:inherit; color:inherit; background:none; border:none;
 .progress-fill{height:100%; background:repeating-linear-gradient(90deg, var(--accent-1) 0 6px, var(--accent-2) 6px 12px);}
 .icon-svg{display:inline-flex; width:1em; height:1em; vertical-align:-0.15em; flex:0 0 auto;}
 .icon-svg svg{width:100%; height:100%; display:block;}
+#os-root input, #os-root textarea, #login-screen input{cursor:text;}
+.resize-handle{cursor:nwse-resize;}
+/* When a character cursor is active, hide the native OS cursor completely —
+   no exceptions, no fallback to the system arrow anywhere in the OS. A live
+   <img> (#custom-cursor-img below) tracks the real mouse position instead,
+   which is also how it gets to stay genuinely animated the whole time. */
+body.custom-cursor, body.custom-cursor *{cursor:none !important;}
 
 /* ---------- BOOT + LOGIN ---------- */
 #boot-screen, #login-screen{position:fixed; inset:0; z-index:10000; background:#000; display:flex; align-items:center; justify-content:center; flex-direction:column;}
@@ -248,3 +255,5 @@ input,textarea{font-family:inherit; color:inherit; background:none; border:none;
 .login-sub{font-size:10px; color:var(--text-3); text-align:center; margin-top:-8px;}
 .login-input{width:100%; background:var(--panel); border:var(--pixel) solid #000; box-shadow:inset 2px 2px 0 rgba(0,0,0,.5); padding:10px 12px; font-size:12px; color:var(--text-1); text-align:center;}
 .login-switch{font-size:9px; color:var(--accent-2); cursor:pointer; text-align:center; line-height:1.6;}
+#custom-cursor-img{position:fixed; width:48px; height:48px; object-fit:contain; pointer-events:none; z-index:10001; image-rendering:pixelated; opacity:0; transition:opacity .08s linear; filter:drop-shadow(3px 3px 0 rgba(0,0,0,.6)); left:0; top:0; margin:0;}
+#custom-cursor-img.show{opacity:1;}
