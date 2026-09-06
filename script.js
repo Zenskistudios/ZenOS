@@ -12,18 +12,18 @@
 const LS_KEY = 'zenos_state_v1';
 
 const APP_REGISTRY = {
-  filemanager:{name:'File Manager', icon:'🗂️', color:'#7c6cff', system:true, pinned:true},
+  filemanager:{name:'File Manager', icon:'🗂️', svgKey:'filemanager', color:'#7c6cff', system:true, pinned:true},
   browser:    {name:'Zen Browse', icon:'🧭', svgKey:'browser', color:'#2fe6c9', system:true, pinned:true},
-  texteditor: {name:'Text Editor',  icon:'📝', color:'#ffb35c', system:true, pinned:true},
-  notes:      {name:'Notes',        icon:'🗒️', color:'#ffd166', system:true, pinned:false},
+  texteditor: {name:'Text Editor',  icon:'📝', svgKey:'texteditor', color:'#ffb35c', system:true, pinned:true},
+  notes:      {name:'Notes',        icon:'🗒️', svgKey:'notes', color:'#ffd166', system:true, pinned:false},
   calculator: {name:'Calculator',   icon:'🧮', svgKey:'calc', color:'#4ade80', system:true, pinned:true},
-  calendar:   {name:'Calendar',     icon:'📅', color:'#ff6b6b', system:true, pinned:false},
-  terminal:   {name:'Terminal',     icon:'⌨️', color:'#0f1117', color2:'#2fe6c9', system:true, pinned:false},
-  settings:   {name:'Settings',     icon:'⚙️', color:'#a7afc0', system:true, pinned:true},
+  calendar:   {name:'Calendar',     icon:'📅', svgKey:'calendar', color:'#ff6b6b', system:true, pinned:false},
+  terminal:   {name:'Terminal',     icon:'⌨️', svgKey:'terminal', color:'#0f1117', color2:'#2fe6c9', system:true, pinned:false},
+  settings:   {name:'Settings',     icon:'⚙️', svgKey:'settings', color:'#a7afc0', system:true, pinned:true},
   taskmanager:{name:'Task Manager', icon:'📊', svgKey:'appmanager', color:'#ff9f5c', system:true, pinned:false},
   softwarehub:{name:'Software Hub', icon:'🛍️', svgKey:'apps', color:'#7c6cff', system:true, pinned:true},
-  youtube:    {name:'PlayTube',     icon:'▶️', color:'#ff5c5c', system:true, pinned:false},
-  spotify:    {name:'Wavelength',   icon:'🎧', color:'#1ed760', system:true, pinned:false},
+  youtube:    {name:'PlayTube',     icon:'▶️', svgKey:'youtube', color:'#ff5c5c', system:true, pinned:false},
+  spotify:    {name:'Wavelength',   icon:'🎧', svgKey:'spotify', color:'#1ed760', system:true, pinned:false},
   games:      {name:'Games',        icon:'🎮', color:'#7c6cff', system:true, pinned:false},
 };
 
@@ -86,6 +86,71 @@ const TRACK_CATALOG = [
   {id:'4Dvkj6JhhA12EX05fT7y2e', title:'As It Was', artist:'Harry Styles', album:"Harry's House", color:'#ffb35c'},
   {id:'3BnDvpeuGOj21Ir2aVEtQo', title:'Calm Down', artist:'Rema', album:'Rave & Roses', color:'#4ade80'},
 ];
+
+const SPOTIFY_CLIENT_ID = '79888a0190354e6d8bf1b091d5c5bb4a';
+const SPOTIFY_REDIRECT_URI = 'https://zen-os-inky.vercel.app';
+const SPOTIFY_SCOPES = 'user-read-private user-read-email user-library-read playlist-read-private user-top-read streaming user-read-playback-state user-modify-playback-state';
+const SPOTIFY_TOKEN_KEY = 'zenos_spotify_token_v1';
+let spotifyWebPlayer = null;
+let spotifyWebDeviceId = null;
+let spotifyWebPlayerPromise = null;
+function spotifyRedirectUri(){ return SPOTIFY_REDIRECT_URI; }
+function randomVerifier(){ const bytes=new Uint8Array(64); crypto.getRandomValues(bytes); return [...bytes].map(b=>('0'+b.toString(16)).slice(-2)).join(''); }
+async function spotifyChallenge(verifier){ const digest=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)); let binary=''; new Uint8Array(digest).forEach(b=>binary+=String.fromCharCode(b)); return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+async function spotifyLogin(){
+  const verifier=randomVerifier();
+  sessionStorage.setItem('zenos_spotify_verifier', verifier);
+  const challenge=await spotifyChallenge(verifier);
+  const params=new URLSearchParams({client_id:SPOTIFY_CLIENT_ID,response_type:'code',redirect_uri:spotifyRedirectUri(),code_challenge_method:'S256',code_challenge:challenge,scope:SPOTIFY_SCOPES});
+  window.location.assign('https://accounts.spotify.com/authorize?'+params.toString());
+}
+async function spotifyHandleCallback(){
+  const params=new URLSearchParams(window.location.search); const code=params.get('code'); if(!code) return;
+  const verifier=sessionStorage.getItem('zenos_spotify_verifier'); if(!verifier) return;
+  const response=await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:SPOTIFY_CLIENT_ID,grant_type:'authorization_code',code,redirect_uri:spotifyRedirectUri(),code_verifier:verifier})});
+  if(!response.ok) throw new Error('Spotify authorization failed');
+  const token=await response.json(); token.expires_at=Date.now()+token.expires_in*1000; localStorage.setItem(SPOTIFY_TOKEN_KEY,JSON.stringify(token)); sessionStorage.removeItem('zenos_spotify_verifier'); history.replaceState({},'',window.location.pathname); return token;
+}
+function spotifyToken(){ try{ const token=JSON.parse(localStorage.getItem(SPOTIFY_TOKEN_KEY)||'null'); return token&&token.expires_at>Date.now()+30000?token:null; }catch(error){ return null; } }
+function spotifyHasPlaybackScopes(token){ const scopes=(token||spotifyToken())?.scope||''; return ['streaming','user-read-playback-state','user-modify-playback-state'].every(scope=>scopes.split(' ').includes(scope)); }
+function spotifyLogout(){ localStorage.removeItem(SPOTIFY_TOKEN_KEY); }
+async function spotifyApi(path, options){ const token=spotifyToken(); if(!token) throw new Error('Log in to Spotify first'); const response=await fetch('https://api.spotify.com/v1/'+path,{...(options||{}),headers:{'Content-Type':'application/json',...(options&&options.headers||{}),Authorization:'Bearer '+token.access_token}}); const text=await response.text(); if(!response.ok){ let detail=text; try{ const payload=JSON.parse(text); detail=payload.error?.message||detail; }catch(error){} throw new Error('Spotify API request failed ('+response.status+')'+(detail?': '+detail:'')); } if(!text.trim()) return null; try{ return JSON.parse(text); }catch(error){ return text; } }
+function loadSpotifyWebPlayer(){
+  if(spotifyWebPlayerPromise) return spotifyWebPlayerPromise;
+  spotifyWebPlayerPromise=new Promise((resolve,reject)=>{
+    if(!spotifyToken()) return reject(new Error('Log in with Spotify first'));
+    if(!spotifyHasPlaybackScopes()) return reject(new Error('Spotify playback permission is outdated. Log out and log in again.'));
+    const start=()=>{
+      if(!window.Spotify) return reject(new Error('Spotify Web Playback SDK did not load'));
+      if(spotifyWebPlayer) return resolve(spotifyWebPlayer);
+      const player=new Spotify.Player({name:'Wavelength Zen Player',getOAuthToken:callback=>callback(spotifyToken()?.access_token||''),volume:0.7});
+      player.addListener('ready',({device_id})=>{spotifyWebDeviceId=device_id; spotifyWebPlayer=player; resolve(player);});
+      player.addListener('initialization_error',({message})=>reject(new Error(message)));
+      player.addListener('authentication_error',({message})=>reject(new Error(message)));
+      player.addListener('account_error',({message})=>reject(new Error(message+' Spotify Premium is required for in-app playback.')));
+      player.addListener('playback_error',({message})=>notify('Spotify playback error',message,'⚠️','#ff5c5c'));
+      player.connect();
+    };
+    if(window.Spotify) start();
+    else { window.onSpotifyWebPlaybackSDKReady=start; const script=document.createElement('script'); script.src='https://sdk.scdn.co/spotify-player.js'; script.async=true; script.onerror=()=>reject(new Error('Could not load Spotify Web Playback SDK')); document.head.appendChild(script); }
+  });
+  return spotifyWebPlayerPromise;
+}
+async function spotifyPlayTrack(trackId){
+  return spotifyPlayResource(trackId,'track');
+}
+async function spotifyPlayResource(resourceId, resourceType){
+  const player=await loadSpotifyWebPlayer();
+  if(!spotifyWebDeviceId) throw new Error('Spotify player device is not ready');
+  await spotifyApi('me/player',{method:'PUT',body:JSON.stringify({device_ids:[spotifyWebDeviceId],play:true})});
+  const body=resourceType==='track'?{uris:['spotify:track:'+resourceId]}:{context_uri:'spotify:'+resourceType+':'+resourceId};
+  await spotifyApi('me/player/play?device_id='+encodeURIComponent(spotifyWebDeviceId),{method:'PUT',body:JSON.stringify(body)});
+  await player.resume();
+}
+async function hydrateSpotifyArtwork(track){
+  if(track.imageUrl || !spotifyToken()) return track.imageUrl||'';
+  try{ const endpoint=track.resourceType==='album'?'albums/':'tracks/'; const data=await spotifyApi(endpoint+encodeURIComponent(track.id)); track.imageUrl=track.resourceType==='album'?(data.images?.[0]?.url||''):(data.album?.images?.[0]?.url||''); saveState(); return track.imageUrl; }catch(error){ return ''; }
+}
 
 function uid(p){ return p + '_' + Math.random().toString(36).slice(2,9); }
 function nowStr(){ return new Date().toLocaleString(); }
@@ -187,7 +252,15 @@ const ICONS = {
 	</g>
 </svg>`,
 };
+const SVG_ASSETS = {
+  filemanager:'manager.svg', browser:'browers.svg', texteditor:'powershell.svg', notes:'Photo.svg',
+  calculator:'calc.svg', calc:'calc.svg', calendar:'calendar.svg', terminal:'terminal.svg', settings:'setting.svg',
+  taskmanager:'appmanager.svg', appmanager:'appmanager.svg', softwarehub:'apps.svg', apps:'apps.svg', youtube:'videoplayer.svg', spotify:'Wavelength.svg',
+  games:'booth.svg', about:'about.svg', battery:'battery.svg', bluetooth:'Bluetooth.svg', airplane:'airplane.svg',
+  brightness:'brightness.svg', notification:'notification.svg', wifi:'wifi.svg', storage:'storage.svg', privacy:'privacy.svg'
+};
 function iconHtml(key, fallback){
+  if(SVG_ASSETS[key]) return `<span class="icon-svg asset-icon"><img src="svg/${encodeURIComponent(SVG_ASSETS[key])}" alt="" draggable="false"></span>`;
   return ICONS[key] ? `<span class="icon-svg">${ICONS[key]}</span>` : (fallback||'');
 }
 
@@ -1487,96 +1560,118 @@ function renderBrowser(body, w){
 
 /* ---- YOUTUBE (PlayTube) — real YouTube thumbnails + real embedded player ---- */
 function renderYoutube(body, w){
-  const inst = winInstances[w.id]; inst.view = inst.view || {screen:'home', videoId:null};
-  function draw(){
-    if(inst.view.screen==='home'){
-      body.innerHTML = `<div class="app">
-        <div class="app-toolbar"><input class="search" placeholder="Search PlayTube" id="yt-search"></div>
-        <div class="app-body">
-          <div class="grid-cards">${VIDEO_CATALOG.map(v=>videoCard(v)).join('')}</div>
-        </div></div>`;
-      body.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click', ()=>{ inst.view={screen:'watch', videoId:el.dataset.id}; draw(); }));
-      body.querySelector('#yt-search').addEventListener('input', e=>{
-        const q = e.target.value.toLowerCase();
-        body.querySelector('.grid-cards').innerHTML = VIDEO_CATALOG.filter(v=>v.title.toLowerCase().includes(q)).map(videoCard).join('');
-        body.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click', ()=>{ inst.view={screen:'watch', videoId:el.dataset.id}; draw(); }));
-      });
-    } else {
-      const v = VIDEO_CATALOG.find(x=>x.id===inst.view.videoId);
-      body.innerHTML = `<div class="app">
-        <div class="app-toolbar"><button class="pill" id="yt-back">← Back</button></div>
-        <div class="app-body">
-          <div style="width:100%; aspect-ratio:16/9; border-radius:0; overflow:hidden; margin-bottom:14px; background:#000;">
-            <iframe width="100%" height="100%" src="https://www.youtube.com/embed/${v.id}?autoplay=1&rel=0" title="${escapeHtml(v.title)}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display:block;"></iframe>
-          </div>
-          <h3 style="font-family:var(--font-display);">${escapeHtml(v.title)}</h3>
-          <div style="color:var(--text-2); font-size:12px; margin-top:4px;">${escapeHtml(v.cat)} · real YouTube video</div>
-          <div style="display:flex; align-items:center; gap:10px; margin:14px 0;">
-            <div style="width:34px; height:34px; border-radius:0; background:#ff5c5c33; display:flex; align-items:center; justify-content:center;">📺</div>
-            <div style="flex:1;"><b style="font-size:12.5px;">${escapeHtml(v.channel)}</b></div>
-            <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener" class="btn primary" style="text-decoration:none;">Open on YouTube ↗</a>
-          </div>
-        </div></div>`;
-      body.querySelector('#yt-back').addEventListener('click', ()=>{ inst.view={screen:'home'}; draw(); });
+  const inst = winInstances[w.id]; inst.view = inst.view || {screen:'home', videos:[], query:''};
+  const fallback = VIDEO_CATALOG.map(v=>({id:v.id,title:v.title,channel:v.channel,publishedAt:'',description:'',thumbnail:`https://img.youtube.com/vi/${v.id}/mqdefault.jpg`}));
+  async function loadVideos(query){
+    inst.loading=true; draw();
+    try{
+      const response=await fetch('/api/youtube?q='+encodeURIComponent(query));
+      if(!response.ok) throw new Error((await response.json()).error||'YouTube service unavailable');
+      const data=await response.json();
+      inst.videos = (data.videos && data.videos.length) ? data.videos : fallback;
+      inst.query=query;
+      inst.error=null;
+    }catch(error){
+      inst.error=error.message;
+      if(!inst.videos.length) inst.videos = fallback;
     }
+    inst.loading=false; draw();
   }
-  function videoCard(v){
-    return `<div class="card yt-card" data-id="${v.id}" style="cursor:pointer; padding:0; overflow:hidden;">
-      <div style="width:100%; aspect-ratio:16/9; position:relative; background:#000;">
-        <img src="https://img.youtube.com/vi/${v.id}/mqdefault.jpg" alt="${escapeHtml(v.title)}" style="width:100%; height:100%; object-fit:cover; display:block;">
-        <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.15); font-size:26px;">▶️</div>
-      </div>
-      <div style="padding:10px;"><div style="font-size:12.5px; font-weight:600; line-height:1.3;">${escapeHtml(v.title)}</div>
-      <div style="font-size:11px; color:var(--text-3); margin-top:4px;">${escapeHtml(v.channel)} · ${escapeHtml(v.cat)}</div></div>
-    </div>`;
+  function draw(){
+    if(inst.view.screen==='watch'){
+      const v=inst.view.video;
+      body.innerHTML=`<div class="app yt-app"><div class="app-toolbar"><button class="pill" id="yt-back">← Back</button><span style="font-family:var(--font-display);font-size:10px;">PlayTube</span></div><div class="app-body"><div style="width:100%;aspect-ratio:16/9;background:#000;margin-bottom:14px;"><iframe width="100%" height="100%" src="https://www.youtube.com/embed/${encodeURIComponent(v.id)}?autoplay=1&rel=0" title="${escapeHtml(v.title)}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display:block;"></iframe></div><h3 style="font-family:var(--font-display);font-size:13px;line-height:1.5;">${escapeHtml(v.title)}</h3><div style="color:var(--text-2);font-size:11px;margin-top:7px;">${escapeHtml(v.channel)}${v.publishedAt?' · '+new Date(v.publishedAt).toLocaleDateString():''}</div><p style="color:var(--text-2);font-size:11px;line-height:1.6;margin-top:14px;white-space:pre-wrap;">${escapeHtml(v.description||'')}</p></div></div>`;
+      body.querySelector('#yt-back').addEventListener('click',()=>{inst.view={screen:'home'};draw();}); return;
+    }
+    const videos=inst.videos.length?inst.videos:fallback;
+    body.innerHTML=`<div class="app yt-app"><div class="app-toolbar" style="gap:8px;"><div style="font-family:var(--font-display);font-size:11px;white-space:nowrap;">▶ PlayTube</div><input class="search" id="yt-search" value="${escapeHtml(inst.query)}" placeholder="Search videos"><button class="btn primary" id="yt-search-btn">Search</button></div><div class="app-body"><div style="display:flex;gap:6px;margin-bottom:14px;"><button class="pill yt-nav active">Home</button><button class="pill yt-nav">Explore</button><button class="pill yt-nav">Trending</button><button class="pill yt-nav">History</button></div>${inst.loading?`<div class="grid-cards">${Array.from({length:6},()=>'<div class="card" style="height:180px;opacity:.5;"></div>').join('')}</div>`:inst.error?`<div class="empty-state"><div class="ic">⚠️</div>${escapeHtml(inst.error)}<button class="pill" id="yt-retry">Retry</button></div>`:`<div class="grid-cards">${videos.map(videoCard).join('')}</div>`}</div></div>`;
+    body.querySelector('#yt-search-btn').addEventListener('click',()=>{const q=body.querySelector('#yt-search').value.trim();if(q)loadVideos(q);}); body.querySelector('#yt-search').addEventListener('keydown',e=>{if(e.key==='Enter')body.querySelector('#yt-search-btn').click();}); body.querySelector('#yt-retry')?.addEventListener('click',()=>loadVideos(inst.query||'JavaScript tutorial')); body.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click',()=>{inst.view={screen:'watch',video:videos.find(v=>v.id===el.dataset.id)};draw();}));
   }
-  draw();
+  function videoCard(v){ return `<div class="card yt-card" data-id="${escapeHtml(v.id)}" style="cursor:pointer;padding:0;overflow:hidden;"><div style="width:100%;aspect-ratio:16/9;background:#000;"><img src="${escapeHtml(v.thumbnail)}" alt="${escapeHtml(v.title)}" style="width:100%;height:100%;object-fit:cover;display:block;"></div><div style="padding:10px;"><div style="font-size:12px;font-weight:600;line-height:1.35;">${escapeHtml(v.title)}</div><div style="font-size:10px;color:var(--text-3);margin-top:5px;">${escapeHtml(v.channel)}${v.publishedAt?' · '+new Date(v.publishedAt).toLocaleDateString():''}</div></div></div>`; }
+  draw(); if(!inst.videos.length) loadVideos('JavaScript tutorial');
 }
 
 /* ---- SPOTIFY (Wavelength) — real Spotify embed player, real audio ---- */
 function renderSpotify(body, w){
   const inst = winInstances[w.id]; inst.tab = inst.tab || 'home'; inst.nowPlaying = inst.nowPlaying || (TRACK_CATALOG[0] && TRACK_CATALOG[0].id) || null;
   function allTracks(){ return [...TRACK_CATALOG, ...(state.customTracks||[])]; }
+  function authBar(){
+    const token=spotifyToken();
+    const needsReauth=token&&!spotifyHasPlaybackScopes(token);
+    return `<div class="wl-auth"><span class="wl-auth-dot ${token&&!needsReauth?'connected':''}"></span>${needsReauth?'Spotify playback permission needs renewal':token?'Spotify account connected':'Spotify account not connected'}<button id="sp-auth">${needsReauth?'Renew permissions':token?'Log out':'Log in with Spotify'}</button></div>`;
+  }
   function draw(){
-    body.innerHTML = `<div class="app">
+    body.innerHTML = `<div class="app wavelength">
+      ${authBar()}
       <div class="side-split" style="flex:1;">
-        <div class="side-nav">
-          <div class="side-item ${inst.tab==='home'?'active':''}" data-t="home">🏠 Home</div>
-          <div class="side-item ${inst.tab==='liked'?'active':''}" data-t="liked">💚 Liked Songs</div>
-          <div class="side-item ${inst.tab==='add'?'active':''}" data-t="add">➕ Add from Spotify</div>
+        <div class="side-nav wl-sidebar">
+          <div class="wl-nav-label">Your Library</div>
+          <div class="wl-nav-item ${inst.tab==='home'?'active':''}" data-t="home"><span class="wl-nav-icon">⌂</span>Home</div>
+          <div class="wl-nav-item ${inst.tab==='albums'?'active':''}" data-t="albums"><span class="wl-nav-icon">▣</span>Albums</div>
+          <div class="wl-nav-item ${inst.tab==='liked'?'active':''}" data-t="liked"><span class="wl-nav-icon">♥</span>Liked Songs</div>
+          <div class="wl-nav-label" style="margin-top:18px;">Zen Music</div>
+          <div class="wl-nav-item ${inst.tab==='search'?'active':''}" data-t="search"><span class="wl-nav-icon">⌕</span>Spotify Search</div>
+          <div class="wl-nav-item ${inst.tab==='add'?'active':''}" data-t="add"><span class="wl-nav-icon">＋</span>Add from Spotify</div>
         </div>
-        <div class="app-body" id="sp-content" style="flex:1;"></div>
+        <div class="app-body wl-main" id="sp-content" style="flex:1;"></div>
       </div>
-      <div style="flex:0 0 auto; border-top:1px solid var(--panel-border); padding:0;" id="sp-player"></div>
+      <div class="wl-player" id="sp-player"></div>
     </div>`;
     body.querySelectorAll('[data-t]').forEach(el=>el.addEventListener('click', ()=>{ inst.tab=el.dataset.t; draw(); }));
+    body.querySelector('#sp-auth').addEventListener('click', async ()=>{ const token=spotifyToken(); if(token&&!spotifyHasPlaybackScopes(token)){ spotifyLogout(); } else if(token){ spotifyLogout(); draw(); return; } try{ await spotifyLogin(); }catch(error){ notify('Spotify login failed',error.message,'⚠️','#ff5c5c'); } });
     drawTabContent();
     drawPlayer();
   }
   function drawTabContent(){
     const c = body.querySelector('#sp-content');
     if(inst.tab==='home'){
-      c.innerHTML = `<div class="sm-section-title" style="padding-left:0;">Library</div><div id="sp-tracklist">${allTracks().map(trackRow).join('')}</div>`;
+      c.innerHTML = `<div class="wl-heading">Good evening</div><div class="wl-section-title">Your Library</div><div id="sp-tracklist">${allTracks().map(trackRow).join('')}</div>`;
       bindTracks(c);
+    } else if(inst.tab==='albums'){
+      const albums=(state.customTracks||[]).filter(item=>item.resourceType==='album');
+      c.innerHTML=`<div class="wl-heading">Albums</div><div class="grid-cards" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));">${albums.length?albums.map(albumCard).join(''):'<div class="np-empty">Search for an album to add it here.</div>'}</div>`;
+      c.querySelectorAll('[data-play]').forEach(el=>el.addEventListener('click',async()=>{inst.nowPlaying=el.dataset.play;draw();if(spotifyToken()){try{await spotifyPlayResource(inst.nowPlaying,'album');}catch(error){notify('Album playback unavailable',error.message,'⚠️','#ffb35c');}}}));
     } else if(inst.tab==='liked'){
       const liked = allTracks().filter(t=>(state.likedTracks||[]).includes(t.id));
-      c.innerHTML = `<div class="sm-section-title" style="padding-left:0;">Liked Songs</div><div>${liked.length?liked.map(trackRow).join(''):'<div class="np-empty">No liked songs yet — heart a track to save it</div>'}</div>`;
+      c.innerHTML = `<div class="wl-heading">Liked Songs</div><div>${liked.length?liked.map(trackRow).join(''):'<div class="np-empty">No liked songs yet — heart a track to save it</div>'}</div>`;
       bindTracks(c);
     } else if(inst.tab==='add'){
       c.innerHTML = `
-        <div class="sm-section-title" style="padding-left:0;">Add a real track from Spotify</div>
+        <div class="wl-heading">Add from Spotify</div>
         <p style="font-size:11.5px; color:var(--text-2); margin-bottom:10px; line-height:1.5;">Paste a Spotify track, album, playlist, artist, show, or episode link. It will be embedded and played inside Wavelength.</p>
-        <div style="display:flex; gap:8px;">
+        <div class="wl-form">
           <input class="search" style="flex:1;" id="sp-add-input" placeholder="https://open.spotify.com/track/...">
-          <button class="btn primary" id="sp-add-btn">Add</button>
+          <button class="wl-button" id="sp-add-btn">Add</button>
         </div>
-        <div class="sm-section-title" style="padding-left:0; margin-top:16px;">Your added tracks</div>
+        <div class="wl-section-title">Your added tracks</div>
         <div>${(state.customTracks||[]).length? state.customTracks.map(trackRow).join('') : '<div class="np-empty">None added yet</div>'}</div>`;
       bindTracks(c);
       c.querySelector('#sp-add-btn').addEventListener('click', addCustomTrack);
       c.querySelector('#sp-add-input').addEventListener('keydown', e=>{ if(e.key==='Enter') addCustomTrack(); });
+    } else if(inst.tab==='search'){
+      c.innerHTML=`<div class="wl-heading">Search</div><div class="wl-form"><select id="sp-api-type" style="background:var(--wl-surface-2);color:#fff;border:1px solid #3a3a3a;padding:11px;"><option value="track">Tracks</option><option value="album">Albums</option></select><input class="search" id="sp-api-search" placeholder="What do you want to play?"><button class="wl-button" id="sp-api-search-btn">Search</button></div><div id="sp-api-results" style="margin-top:12px;"></div>`;
+      c.querySelector('#sp-api-search-btn').addEventListener('click', searchSpotify);
+      c.querySelector('#sp-api-search').addEventListener('keydown', event=>{if(event.key==='Enter') searchSpotify();});
     }
   }
+  async function searchSpotify(){
+    const input=body.querySelector('#sp-api-search'); const result=body.querySelector('#sp-api-results'); if(!input||!result) return;
+    const query=input.value.trim();
+    if(!query){ result.innerHTML='<div class="np-empty">Enter an artist, track, or album to search Spotify.</div>'; input.focus(); return; }
+    if(!spotifyToken()){ result.innerHTML='<div class="np-empty">Log in with Spotify to search the Web API.</div>'; return; }
+    result.innerHTML='<div class="np-empty">Searching Spotify...</div>';
+    try{
+      const type=body.querySelector('#sp-api-type').value; const data=await spotifyApi('search?type='+type+'&limit=10&q='+encodeURIComponent(query));
+      if(type==='album'){
+        result.innerHTML=data.albums.items.map(album=>`<div class="wl-row" data-api-album="${album.id}"><div class="wl-cover">${album.images?.[2]?.url?`<img src="${escapeHtml(album.images[2].url)}" alt="">`:'▣'}</div><div><div class="wl-track-title">${escapeHtml(album.name)}</div><div class="wl-track-meta">${escapeHtml(album.artists.map(artist=>artist.name).join(', '))} · ${escapeHtml(album.release_date||'')}</div></div></div>`).join('')||'<div class="np-empty">No albums found</div>';
+        result.querySelectorAll('[data-api-album]').forEach(row=>row.addEventListener('click',()=>{const album=data.albums.items.find(item=>item.id===row.dataset.apiAlbum); state.customTracks=state.customTracks||[]; const saved={id:album.id,resourceType:'album',title:album.name,artist:album.artists.map(artist=>artist.name).join(', '),album:album.name,imageUrl:album.images?.[0]?.url||'',color:'#1ed760'}; const index=state.customTracks.findIndex(item=>item.id===album.id); if(index<0) state.customTracks.push(saved); else state.customTracks[index]=saved; saveState(); inst.nowPlaying=album.id; inst.nowPlayingType='album'; draw();}));
+      } else {
+        result.innerHTML=data.tracks.items.map(track=>`<div class="wl-row" data-api-track="${track.id}"><div class="wl-cover">${track.album.images?.[2]?.url?`<img src="${escapeHtml(track.album.images[2].url)}" alt="">`:'♪'}</div><div><div class="wl-track-title">${escapeHtml(track.name)}</div><div class="wl-track-meta">${escapeHtml(track.artists.map(artist=>artist.name).join(', '))} · ${escapeHtml(track.album.name)}</div></div></div>`).join('')||'<div class="np-empty">No tracks found</div>';
+        result.querySelectorAll('[data-api-track]').forEach(row=>row.addEventListener('click',()=>{const track=data.tracks.items.find(item=>item.id===row.dataset.apiTrack); state.customTracks=state.customTracks||[]; if(!state.customTracks.find(item=>item.id===track.id)) state.customTracks.push({id:track.id,resourceType:'track',title:track.name,artist:track.artists.map(artist=>artist.name).join(', '),album:track.album.name,imageUrl:track.album.images?.[0]?.url||'',color:'#1ed760'}); saveState(); inst.nowPlaying=track.id; draw();}));
+      }
+    }catch(error){ result.innerHTML=`<div class="np-empty">${escapeHtml(error.message)}</div>`; }
+  }
+  function albumCard(album){ return `<div class="card" data-play="${album.id}" style="background:var(--wl-surface-2);border:0;box-shadow:none;cursor:pointer;"><div style="aspect-ratio:1;background:#303030;margin-bottom:10px;">${album.imageUrl?`<img src="${escapeHtml(album.imageUrl)}" alt="" style="width:100%;height:100%;object-fit:cover;">`:'▣'}</div><div class="wl-track-title">${escapeHtml(album.title)}</div><div class="wl-track-meta">${escapeHtml(album.artist)}</div></div>`; }
   function addCustomTrack(){
     const inp = body.querySelector('#sp-add-input'); if(!inp) return;
     const raw = inp.value.trim(); if(!raw) return;
@@ -1594,14 +1689,14 @@ function renderSpotify(body, w){
   function trackRow(t){
     const liked = (state.likedTracks||[]).includes(t.id);
     const playing = inst.nowPlaying === t.id;
-    return `<div class="sm-row" style="cursor:pointer; ${playing?'background:var(--panel-strong);':''}" data-play="${t.id}">
-      <div class="g" style="background:${t.color}33; color:${t.color}">🎵</div>
-      <div class="n" style="flex:1;"><div>${escapeHtml(t.title)}</div><div style="font-size:10.5px; color:var(--text-3);">${escapeHtml(t.artist)}${t.album?' · '+escapeHtml(t.album):''}</div></div>
-      <button data-like="${t.id}" style="color:${liked?'var(--accent-2)':'var(--text-3)'};">♥</button>
+    return `<div class="wl-row ${playing?'playing':''}" data-play="${t.id}">
+      <div class="wl-cover">${t.imageUrl?`<img src="${escapeHtml(t.imageUrl)}" alt="">`:'♪'}</div>
+      <div><div class="wl-track-title">${escapeHtml(t.title)}</div><div class="wl-track-meta">${escapeHtml(t.artist)}${t.album?' · '+escapeHtml(t.album):''}</div></div>
+      <button class="wl-like ${liked?'liked':''}" data-like="${t.id}">♥</button>
     </div>`;
   }
   function bindTracks(c){
-    c.querySelectorAll('[data-play]').forEach(el=>el.addEventListener('click', e=>{ if(e.target.dataset.like) return; inst.nowPlaying = el.dataset.play; drawTabContent(); drawPlayer(); }));
+    c.querySelectorAll('[data-play]').forEach(el=>el.addEventListener('click', async e=>{ if(e.target.dataset.like) return; inst.nowPlaying = el.dataset.play; drawTabContent(); drawPlayer(); if(spotifyToken()){ try{ const selected=allTracks().find(item=>item.id===inst.nowPlaying); await spotifyPlayResource(inst.nowPlaying,selected?.resourceType||'track'); }catch(error){ notify('In-app playback unavailable',error.message,'⚠️','#ffb35c'); } } }));
     c.querySelectorAll('[data-like]').forEach(el=>el.addEventListener('click', e=>{
       e.stopPropagation();
       state.likedTracks = state.likedTracks || [];
@@ -1615,10 +1710,24 @@ function renderSpotify(body, w){
     const p = body.querySelector('#sp-player'); if(!p) return;
     const t = allTracks().find(x=>x.id===inst.nowPlaying);
     if(!t){ p.innerHTML = `<div style="padding:16px; color:var(--text-3); font-size:12px;">Select a track to start listening</div>`; return; }
+    if(spotifyToken()){
+      p.innerHTML = `<div class="wl-player-status"><span class="wl-auth-dot"></span>Wavelength native player · Spotify Premium required</div><div class="wl-native-player"><div class="wl-native-info"><div class="wl-native-cover" data-wl-art>${t.imageUrl?`<img src="${escapeHtml(t.imageUrl)}" alt="">`:'♪'}</div><div><b>${escapeHtml(t.title)}</b><span>${escapeHtml(t.artist)}${t.album?' · '+escapeHtml(t.album):''}</span></div></div><div class="wl-native-controls"><button data-wl-control="previous">|◀</button><button class="wl-native-play" data-wl-control="play">▶</button><button data-wl-control="next">▶|</button></div><div class="wl-native-actions"><button data-wl-control="pause">Pause</button></div></div>`;
+      p.querySelectorAll('[data-wl-control]').forEach(button=>button.addEventListener('click',async()=>{
+        try{
+          const action=button.dataset.wlControl;
+          if(action==='play') await spotifyPlayResource(t.id,t.resourceType||'track');
+          if(action==='pause') await spotifyApi('me/player/pause',{method:'PUT'});
+          if(action==='next') await spotifyApi('me/player/next',{method:'POST'});
+          if(action==='previous') await spotifyApi('me/player/previous',{method:'POST'});
+        }catch(error){ notify('Spotify control unavailable',error.message,'⚠️','#ffb35c'); }
+      }));
+      loadSpotifyWebPlayer().catch(error=>{ const status=p.querySelector('.wl-player-status'); if(status) status.innerHTML='<span class="wl-auth-dot"></span>'+escapeHtml(error.message); });
+      if(!t.imageUrl){ hydrateSpotifyArtwork(t).then(url=>{ const art=p.querySelector('[data-wl-art]'); if(url&&art) art.innerHTML=`<img src="${escapeHtml(url)}" alt="">`; }); }
+      return;
+    }
     const resourceType = t.resourceType || 'track';
     const height = resourceType==='track' || resourceType==='episode' ? 152 : 352;
-    // Spotify's official embed widget stays inside the Wavelength window.
-    p.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel-strong);"><span style="width:8px;height:8px;background:#1ed760;box-shadow:0 0 0 2px #0b0d12; flex:0 0 auto;"></span><span style="font-size:10px;color:var(--text-2);">Playing inside Wavelength · ${escapeHtml(resourceType)}</span></div><iframe key="${t.id}" style="border-radius:0; display:block;" src="https://open.spotify.com/embed/${resourceType}/${encodeURIComponent(t.id)}?utm_source=generator&theme=0" width="100%" height="${height}" frameborder="0" allowfullscreen="" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy" title="Spotify ${escapeHtml(resourceType)} player"></iframe>`;
+    p.innerHTML = `<div class="wl-player-status"><span class="wl-auth-dot"></span>Spotify embed player</div><iframe key="${t.id}" src="https://open.spotify.com/embed/${resourceType}/${encodeURIComponent(t.id)}?utm_source=generator&theme=0" width="100%" height="${height}" allowfullscreen="" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy" title="Spotify ${escapeHtml(resourceType)} player"></iframe>`;
   }
   draw();
 }
@@ -1983,6 +2092,7 @@ setInterval(tickBattery, 60000);
 
 /* ---------------------- INIT ---------------------- */
 function init(){
+  spotifyHandleCallback().catch(error=>notify('Spotify login failed',error.message,'⚠️','#ff5c5c'));
   ensureWallpaperFiles();
   if(window.ZenKernel) ZenKernel.boot(state);
   applyWallpaper();

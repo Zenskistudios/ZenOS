@@ -16,8 +16,15 @@
     SUSPENDED: 'SUSPENDED', TERMINATED: 'TERMINATED', ZOMBIE: 'ZOMBIE'
   });
   const PERMISSIONS = ['filesystem.read', 'filesystem.write', 'filesystem.delete', 'process.spawn', 'process.control', 'network', 'audio', 'clipboard', 'notifications', 'storage'];
+  const ERRNO_MESSAGES = {
+    ENOENT: 'No such file or directory', EACCES: 'Permission denied', EPERM: 'Operation not permitted',
+    EEXIST: 'File exists', ENOMEM: 'Out of memory', ESRCH: 'No such process', EINVAL: 'Invalid argument',
+    EBADF: 'Bad file descriptor', ENOSYS: 'Function not implemented', ENOTDIR: 'Not a directory',
+    EINIT: 'Kernel has not been booted'
+  };
   const subscribers = new Map();
   const eventHistory = [];
+  const bootLog = [];
   const processes = new Map();
   const memoryBlocks = new Map();
   const devices = new Map();
@@ -39,6 +46,8 @@
     config: { totalMemory: 512 * 1024 * 1024 },
     scheduler: { algorithm: 'round-robin', timeSlice: 100, readyQueue: [], sleepingQueue: [], terminated: [], runningPid: null, ticks: 0 },
     error: ZenError,
+    strerror: function (code) { return ERRNO_MESSAGES[code] || 'Unknown error'; },
+    dmesg: function () { return bootLog.slice(); },
     boot: boot,
     shutdown: shutdown,
     process: {
@@ -48,6 +57,9 @@
       kill: function (pid) { return terminateProcess(pid, 137); },
       suspend: suspendProcess,
       resume: resumeProcess,
+      signal: signalProcess,
+      sleep: sleepProcess,
+      wait: waitProcess,
       list: function () { return Array.from(processes.values()).map(publicProcess); },
       get: function (pid) { return publicProcess(processes.get(Number(pid))); },
       priority: setPriority,
@@ -69,11 +81,15 @@
   };
 
   function requireState() {
-    if (!stateRef) throw new ZenError('EINIT', 'Kernel has not been booted');
+    if (!stateRef) throw new ZenError('EINIT', ERRNO_MESSAGES.EINIT);
     return stateRef;
   }
   function persist() {
     if (typeof global.saveState === 'function') global.saveState();
+  }
+  function logBoot(message) {
+    bootLog.push({ at: Date.now(), message: message });
+    if (bootLog.length > 300) bootLog.shift();
   }
   function emit(type, data) {
     const event = { type: type, data: data || {}, at: Date.now() };
@@ -100,8 +116,12 @@
   function boot(nextState) {
     stateRef = nextState || requireState();
     bootAt = Date.now();
+    logBoot('Zen kernel v' + kernel.version + ' booting');
+    logBoot('scheduler: ' + kernel.scheduler.algorithm + ' timeSlice=' + kernel.scheduler.timeSlice + 'ms');
     schedulerTimer = schedulerTimer || setInterval(schedulerTick, kernel.scheduler.timeSlice);
+    logBoot('mounting virtual filesystem');
     registerDefaultDevices();
+    logBoot('devices registered: ' + Array.from(devices.keys()).join(', '));
     registerService('StorageService', 'storage');
     registerService('NotificationService', 'notifications');
     registerService('ProcessService', 'process');
@@ -111,10 +131,12 @@
     registerService('WindowService', 'window');
     registerService('AudioService', 'audio');
     registerService('NetworkService', 'network');
+    logBoot('services started: ' + Array.from(services.keys()).join(', '));
     if (typeof global.BroadcastChannel === 'function' && !ipcChannel) {
       ipcChannel = new global.BroadcastChannel('zen-os-ipc');
       ipcChannel.onmessage = function (event) { if (event.data && event.data.type) emit('ipc:message', event.data); };
     }
+    logBoot('boot complete');
     emit('kernel:boot', { at: bootAt });
     return snapshot();
   }
@@ -122,6 +144,7 @@
     if (schedulerTimer) clearInterval(schedulerTimer);
     schedulerTimer = null;
     Array.from(workers.keys()).forEach(terminateWorker);
+    logBoot('kernel shutting down');
     emit('kernel:shutdown', {});
   }
   function registerDefaultDevices() {
@@ -143,7 +166,7 @@
   function createProcess(name, options) {
     options = options || {};
     const parentPid = options.parentPid == null ? null : Number(options.parentPid);
-    const process = { pid: nextPid++, name: name || 'process', appId: options.appId || name || 'process', state: STATES.READY, priority: Number(options.priority || 5), createdAt: Date.now(), cpuTime: 0, memoryUsed: 0, memoryLimit: Number(options.memoryLimit || 64 * 1024 * 1024), parentPid: parentPid, children: [], permissions: (options.permissions || ['filesystem.read', 'filesystem.write', 'filesystem.delete', 'process.spawn', 'process.control', 'storage', 'notifications']).slice(), handles: [], exitCode: null, threads: Number(options.threads || 1), isService: !!options.isService, worker: !!options.worker };
+    const process = { pid: nextPid++, name: name || 'process', appId: options.appId || name || 'process', state: STATES.READY, priority: Number(options.priority || 5), createdAt: Date.now(), cpuTime: 0, memoryUsed: 0, memoryLimit: Number(options.memoryLimit || 64 * 1024 * 1024), parentPid: parentPid, children: [], permissions: (options.permissions || ['filesystem.read', 'filesystem.write', 'filesystem.delete', 'process.spawn', 'process.control', 'storage', 'notifications']).slice(), handles: [], exitCode: null, threads: Number(options.threads || 1), isService: !!options.isService, worker: !!options.worker, wakeAt: null };
     processes.set(process.pid, process);
     allocate(process.pid, Number(options.memory || 1024 * 1024));
     if (parentPid && processes.has(parentPid)) processes.get(parentPid).children.push(process.pid);
@@ -158,8 +181,15 @@
   }
   function terminateProcess(pid, exitCode) {
     const process = processes.get(Number(pid));
-    if (!process) throw new ZenError('ESRCH', 'Process not found', { pid: pid });
-    process.state = STATES.TERMINATED;
+    if (!process) throw new ZenError('ESRCH', ERRNO_MESSAGES.ESRCH, { pid: pid });
+    if (workers.has(process.pid)) {
+      const workerItem = workers.get(process.pid);
+      try { workerItem.worker.terminate(); } catch (error) { /* already gone */ }
+      workerItem.status = 'terminated';
+      workers.delete(process.pid);
+    }
+    const hasLiveParent = process.parentPid && processes.has(process.parentPid) && processes.get(process.parentPid).state !== STATES.TERMINATED;
+    process.state = hasLiveParent ? STATES.ZOMBIE : STATES.TERMINATED;
     process.exitCode = exitCode == null ? 0 : exitCode;
     kernel.scheduler.readyQueue = kernel.scheduler.readyQueue.filter(function (item) { return item !== process.pid; });
     kernel.scheduler.sleepingQueue = kernel.scheduler.sleepingQueue.filter(function (item) { return item !== process.pid; });
@@ -169,9 +199,16 @@
     emit('process:terminated', publicProcess(process));
     return publicProcess(process);
   }
+  function waitProcess(pid) {
+    const process = ensureProcess(pid);
+    if (process.state !== STATES.TERMINATED && process.state !== STATES.ZOMBIE) return null;
+    const exitCode = process.exitCode;
+    processes.delete(process.pid);
+    return exitCode;
+  }
   function suspendProcess(pid) {
     const process = processes.get(Number(pid));
-    if (!process || process.state === STATES.TERMINATED) throw new ZenError('ESRCH', 'Process not found or terminated', { pid: pid });
+    if (!process || process.state === STATES.TERMINATED) throw new ZenError('ESRCH', ERRNO_MESSAGES.ESRCH, { pid: pid });
     process.state = STATES.SUSPENDED;
     kernel.scheduler.readyQueue = kernel.scheduler.readyQueue.filter(function (item) { return item !== process.pid; });
     if (kernel.scheduler.runningPid === process.pid) kernel.scheduler.runningPid = null;
@@ -180,24 +217,45 @@
   }
   function resumeProcess(pid) {
     const process = processes.get(Number(pid));
-    if (!process || process.state === STATES.TERMINATED) throw new ZenError('ESRCH', 'Process not found or terminated', { pid: pid });
+    if (!process || process.state === STATES.TERMINATED) throw new ZenError('ESRCH', ERRNO_MESSAGES.ESRCH, { pid: pid });
     process.state = STATES.READY;
+    process.wakeAt = null;
+    kernel.scheduler.sleepingQueue = kernel.scheduler.sleepingQueue.filter(function (item) { return item !== process.pid; });
     if (!kernel.scheduler.readyQueue.includes(process.pid)) kernel.scheduler.readyQueue.push(process.pid);
     emit('process:resumed', publicProcess(process));
     return publicProcess(process);
   }
+  function sleepProcess(pid, ms) {
+    const process = ensureProcess(pid);
+    process.state = STATES.SLEEPING;
+    process.wakeAt = Date.now() + Number(ms || 0);
+    kernel.scheduler.readyQueue = kernel.scheduler.readyQueue.filter(function (item) { return item !== process.pid; });
+    if (!kernel.scheduler.sleepingQueue.includes(process.pid)) kernel.scheduler.sleepingQueue.push(process.pid);
+    if (kernel.scheduler.runningPid === process.pid) kernel.scheduler.runningPid = null;
+    emit('process:sleeping', { pid: process.pid, wakeAt: process.wakeAt });
+    return process.wakeAt;
+  }
+  function signalProcess(pid, sig) {
+    const name = String(sig || '').toUpperCase().replace(/^SIG/, '');
+    if (name === 'KILL') return terminateProcess(pid, 137);
+    if (name === 'TERM') return terminateProcess(pid, 143);
+    if (name === 'INT') return terminateProcess(pid, 130);
+    if (name === 'STOP') return suspendProcess(pid);
+    if (name === 'CONT') return resumeProcess(pid);
+    throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { sig: sig });
+  }
   function setPriority(pid, priority) {
     const process = ensureProcess(pid);
     const value = Number(priority);
-    if (!Number.isInteger(value) || value < 0 || value > 20) throw new ZenError('EINVAL', 'Priority must be an integer from 0 to 20');
+    if (!Number.isInteger(value) || value < 0 || value > 20) throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { field: 'priority' });
     process.priority = value;
     emit('process:priority', { pid: process.pid, priority: value });
     return publicProcess(process);
   }
   function configureScheduler(options) {
     options = options || {};
-    if (options.algorithm !== undefined && !['round-robin', 'priority', 'fcfs'].includes(options.algorithm)) throw new ZenError('EINVAL', 'Unknown scheduler algorithm');
-    if (options.timeSlice !== undefined && (!Number.isInteger(Number(options.timeSlice)) || Number(options.timeSlice) < 10)) throw new ZenError('EINVAL', 'Time slice must be at least 10ms');
+    if (options.algorithm !== undefined && !['round-robin', 'priority', 'fcfs'].includes(options.algorithm)) throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { field: 'algorithm' });
+    if (options.timeSlice !== undefined && (!Number.isInteger(Number(options.timeSlice)) || Number(options.timeSlice) < 10)) throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { field: 'timeSlice' });
     if (options.algorithm !== undefined) kernel.scheduler.algorithm = options.algorithm;
     if (options.timeSlice !== undefined) {
       kernel.scheduler.timeSlice = Number(options.timeSlice);
@@ -206,7 +264,23 @@
     emit('scheduler:configured', { algorithm: kernel.scheduler.algorithm, timeSlice: kernel.scheduler.timeSlice });
     return Object.assign({}, kernel.scheduler);
   }
+  function wakeSleepers() {
+    const now = Date.now();
+    kernel.scheduler.sleepingQueue = kernel.scheduler.sleepingQueue.filter(function (pid) {
+      const process = processes.get(pid);
+      if (!process || process.state !== STATES.SLEEPING) return false;
+      if (process.wakeAt != null && process.wakeAt <= now) {
+        process.state = STATES.READY;
+        process.wakeAt = null;
+        if (!kernel.scheduler.readyQueue.includes(pid)) kernel.scheduler.readyQueue.push(pid);
+        emit('process:woken', { pid: pid });
+        return false;
+      }
+      return true;
+    });
+  }
   function schedulerTick() {
+    wakeSleepers();
     const candidates = kernel.scheduler.readyQueue.map(function (pid) { return processes.get(pid); }).filter(function (process) { return process && process.state === STATES.READY; });
     if (!candidates.length) { kernel.scheduler.runningPid = null; return; }
     let chosen;
@@ -231,14 +305,14 @@
 
   function ensureProcess(pid) {
     const process = processes.get(Number(pid));
-    if (!process) throw new ZenError('ESRCH', 'Process not found', { pid: pid });
+    if (!process) throw new ZenError('ESRCH', ERRNO_MESSAGES.ESRCH, { pid: pid });
     return process;
   }
   function allocate(pid, size) {
     const process = ensureProcess(pid); size = Number(size);
-    if (!Number.isFinite(size) || size <= 0) throw new ZenError('EINVAL', 'Memory size must be positive');
-    if (process.memoryUsed + size > process.memoryLimit) throw new ZenError('ENOMEM', 'Process memory limit exceeded', { pid: pid, size: size });
-    if (memoryStats().free < size) throw new ZenError('ENOMEM', 'Not enough simulated memory', { size: size });
+    if (!Number.isFinite(size) || size <= 0) throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { field: 'size' });
+    if (process.memoryUsed + size > process.memoryLimit) throw new ZenError('ENOMEM', ERRNO_MESSAGES.ENOMEM, { pid: pid, size: size });
+    if (memoryStats().free < size) throw new ZenError('ENOMEM', ERRNO_MESSAGES.ENOMEM, { size: size });
     const address = nextAddress; nextAddress += size + 16;
     memoryBlocks.set(address, { address: address, pid: process.pid, size: size, allocatedAt: Date.now(), data: new Uint8Array(Math.min(size, 1024 * 1024)) });
     process.memoryUsed += size;
@@ -247,12 +321,12 @@
   }
   function free(pid, address) {
     const block = memoryBlocks.get(Number(address));
-    if (!block || block.pid !== Number(pid)) throw new ZenError('EINVAL', 'Memory block not owned by process');
+    if (!block || block.pid !== Number(pid)) throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { field: 'address' });
     const process = ensureProcess(pid); process.memoryUsed = Math.max(0, process.memoryUsed - block.size); memoryBlocks.delete(Number(address)); emit('memory:freed', { pid: process.pid, address: Number(address) }); return true;
   }
   function freeProcessMemory(pid) { Array.from(memoryBlocks.values()).filter(function (block) { return block.pid === pid; }).forEach(function (block) { memoryBlocks.delete(block.address); }); const process = processes.get(pid); if (process) process.memoryUsed = 0; }
-  function readMemory(pid, address, length) { const block = memoryBlocks.get(Number(address)); if (!block || block.pid !== Number(pid)) throw new ZenError('EACCES', 'Memory block is not owned by process'); return Array.from(block.data.slice(0, Number(length) || block.data.length)); }
-  function writeMemory(pid, address, data) { const block = memoryBlocks.get(Number(address)); if (!block || block.pid !== Number(pid)) throw new ZenError('EACCES', 'Memory block is not owned by process'); const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data); block.data = bytes.slice(0, Math.min(bytes.length, block.size)); return block.data.length; }
+  function readMemory(pid, address, length) { const block = memoryBlocks.get(Number(address)); if (!block || block.pid !== Number(pid)) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES); return Array.from(block.data.slice(0, Number(length) || block.data.length)); }
+  function writeMemory(pid, address, data) { const block = memoryBlocks.get(Number(address)); if (!block || block.pid !== Number(pid)) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES); const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data); block.data = bytes.slice(0, Math.min(bytes.length, block.size)); return block.data.length; }
   function memoryStats() { const used = Array.from(memoryBlocks.values()).reduce(function (sum, block) { return sum + block.size; }, 0); const free = kernel.config.totalMemory - used; const blocks = Array.from(memoryBlocks.values()).map(function (block) { return { address: block.address, pid: block.pid, size: block.size, allocatedAt: block.allocatedAt }; }); return { total: kernel.config.totalMemory, used: used, free: free, allocatedBlocks: blocks, freeBlocks: free > 0 ? [{ size: free }] : [], fragmentation: blocks.length > 1 ? Math.round((blocks.length / (blocks.length + 1)) * 100) / 100 : 0 }; }
 
   function normalizePath(path, cwd) {
@@ -266,37 +340,48 @@
   function parentAt(path) { const normalized = normalizePath(path); const cut = normalized.lastIndexOf('/'); return { parent: nodeAt(cut <= 0 ? '/' : normalized.slice(0, cut)), name: normalized.slice(cut + 1) }; }
   function ensureMetadata(node) { if (!node) return; node.owner = node.owner || 'root'; node.group = node.group || 'users'; node.permissions = node.permissions || 'rw-r--r--'; node.createdAt = node.createdAt || Date.now(); node.modifiedAt = node.modifiedAt || node.createdAt; node.accessedAt = node.accessedAt || node.modifiedAt; node.size = node.type === 'file' ? new Blob([node.content || '']).size : (node.children || []).length; }
   function checkFs(pid, permission) { if (pid == null) return true; return checkPermission(pid, permission); }
-  function fsOpen(path, options) { options = options || {}; let node = nodeAt(path); if (!node && options.create) { fsTouch(path, options.pid); node = nodeAt(path); } if (!node) throw new ZenError('ENOENT', 'Path not found', { path: path }); ensureMetadata(node); const fd = nextFd++; fds.set(fd, { fd: fd, path: normalizePath(path), node: node, mode: options.mode || 'r', pid: options.pid || null }); if (options.pid) ensureProcess(options.pid).handles.push(fd); return fd; }
-  function handle(fd) { const item = fds.get(Number(fd)); if (!item) throw new ZenError('EBADF', 'Invalid file descriptor', { fd: fd }); return item; }
-  function fsRead(fd) { const item = handle(fd); ensureMetadata(item.node); item.node.accessedAt = Date.now(); return item.node.content || ''; }
-  function fsWrite(fd, content) { const item = handle(fd); if (!['w', 'rw', 'a'].includes(item.mode)) throw new ZenError('EACCES', 'File descriptor is not writable'); if (item.pid && !checkFs(item.pid, 'filesystem.write')) throw new ZenError('EACCES', 'Process lacks filesystem.write'); item.node.content = item.mode === 'a' ? (item.node.content || '') + String(content) : String(content); ensureMetadata(item.node); item.node.modifiedAt = Date.now(); persist(); emit('file:written', { path: item.path, size: item.node.size }); return item.node.size; }
-  function fsClose(fd) { const item = handle(fd); fds.delete(Number(fd)); return item.fd; }
-  function fsMkdir(path, options) { const target = parentAt(path); if (!target.parent || target.parent.type !== 'folder') throw new ZenError('ENOENT', 'Parent directory not found'); if ((target.parent.children || []).some(function (child) { return child.name === target.name; })) throw new ZenError('EEXIST', 'Path already exists'); const node = { id: 'vfs_' + Date.now().toString(36), name: target.name, type: 'folder', children: [], owner: 'root', group: 'users', permissions: 'rwxr-xr-x', createdAt: Date.now(), modifiedAt: Date.now(), accessedAt: Date.now() }; target.parent.children = target.parent.children || []; target.parent.children.push(node); persist(); emit('file:created', { path: normalizePath(path), type: 'folder' }); return statNode(node, path); }
-  function fsTouch(path, pid) { if (!checkFs(pid, 'filesystem.write')) throw new ZenError('EACCES', 'Process lacks filesystem.write'); const target = parentAt(path); if (!target.parent || target.parent.type !== 'folder') throw new ZenError('ENOENT', 'Parent directory not found'); let node = (target.parent.children || []).find(function (child) { return child.name === target.name; }); if (!node) { node = { id: 'vfs_' + Date.now().toString(36), name: target.name, type: 'file', content: '', owner: 'root', group: 'users', permissions: 'rw-r--r--', createdAt: Date.now(), modifiedAt: Date.now(), accessedAt: Date.now() }; target.parent.children = target.parent.children || []; target.parent.children.push(node); emit('file:created', { path: normalizePath(path), type: 'file' }); } else { node.modifiedAt = Date.now(); } ensureMetadata(node); persist(); return statNode(node, path); }
-  function fsDelete(path, pid) { if (!checkFs(pid, 'filesystem.delete')) throw new ZenError('EACCES', 'Process lacks filesystem.delete'); const target = parentAt(path); if (!target.parent) throw new ZenError('ENOENT', 'Parent directory not found'); const index = (target.parent.children || []).findIndex(function (child) { return child.name === target.name; }); if (index < 0) throw new ZenError('ENOENT', 'Path not found'); const removed = target.parent.children.splice(index, 1)[0]; const s = requireState(); s.trash = s.trash || []; s.trash.push({ removed: removed, path: normalizePath(path), deletedAt: Date.now() }); persist(); emit('file:deleted', { path: normalizePath(path) }); return true; }
-  function fsRename(path, nextName, pid) { if (!checkFs(pid, 'filesystem.write')) throw new ZenError('EACCES', 'Process lacks filesystem.write'); const target = parentAt(path); const node = target.parent && (target.parent.children || []).find(function (child) { return child.name === target.name; }); if (!node) throw new ZenError('ENOENT', 'Path not found'); node.name = String(nextName); node.modifiedAt = Date.now(); persist(); emit('file:renamed', { path: normalizePath(path), name: node.name }); return statNode(node, normalizePath(path)); }
-  function fsCopy(source, destination, pid) { if (!checkFs(pid, 'filesystem.read') || !checkFs(pid, 'filesystem.write')) throw new ZenError('EACCES', 'Filesystem permission denied'); const sourceNode = nodeAt(source); const target = parentAt(destination); if (!sourceNode || !target.parent) throw new ZenError('ENOENT', 'Copy path not found'); const copy = JSON.parse(JSON.stringify(sourceNode)); copy.id = 'vfs_' + Date.now().toString(36); copy.name = target.name; target.parent.children.push(copy); persist(); emit('file:created', { path: normalizePath(destination), copiedFrom: normalizePath(source) }); return statNode(copy, destination); }
+  function fsOpen(path, options) {
+    options = options || {};
+    if (options.pid && options.mode && options.mode !== 'r' && !checkFs(options.pid, 'filesystem.write')) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { path: path });
+    if (options.pid && (!options.mode || options.mode === 'r') && !checkFs(options.pid, 'filesystem.read')) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { path: path });
+    let node = nodeAt(path); if (!node && options.create) { fsTouch(path, options.pid); node = nodeAt(path); } if (!node) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); ensureMetadata(node); const fd = nextFd++; fds.set(fd, { fd: fd, path: normalizePath(path), node: node, mode: options.mode || 'r', pid: options.pid || null, position: 0 }); if (options.pid) ensureProcess(options.pid).handles.push(fd); return fd;
+  }
+  function handle(fd) { const item = fds.get(Number(fd)); if (!item) throw new ZenError('EBADF', ERRNO_MESSAGES.EBADF, { fd: fd }); return item; }
+  function fsRead(fd) { const item = handle(fd); if (!['r', 'rw', 'a'].includes(item.mode)) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { fd: fd }); ensureMetadata(item.node); item.node.accessedAt = Date.now(); const content = item.node.content || ''; item.position = content.length; return content; }
+  function fsWrite(fd, content) { const item = handle(fd); if (!['w', 'rw', 'a'].includes(item.mode)) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { fd: fd }); if (item.pid && !checkFs(item.pid, 'filesystem.write')) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { fd: fd }); item.node.content = item.mode === 'a' ? (item.node.content || '') + String(content) : String(content); ensureMetadata(item.node); item.node.modifiedAt = Date.now(); item.position = item.node.content.length; persist(); emit('file:written', { path: item.path, size: item.node.size }); return item.node.size; }
+  function fsClose(fd) { const item = handle(fd); fds.delete(Number(fd)); if (item.pid && processes.has(Number(item.pid))) { const process = processes.get(Number(item.pid)); process.handles = process.handles.filter(function (h) { return h !== item.fd; }); } return item.fd; }
+  function fsMkdir(path, options) { options = options || {}; if (options.pid && !checkFs(options.pid, 'filesystem.write')) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { path: path }); const target = parentAt(path); if (!target.parent || target.parent.type !== 'folder') throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); if ((target.parent.children || []).some(function (child) { return child.name === target.name; })) throw new ZenError('EEXIST', ERRNO_MESSAGES.EEXIST, { path: path }); const node = { id: 'vfs_' + Date.now().toString(36), name: target.name, type: 'folder', children: [], owner: 'root', group: 'users', permissions: 'rwxr-xr-x', createdAt: Date.now(), modifiedAt: Date.now(), accessedAt: Date.now() }; target.parent.children = target.parent.children || []; target.parent.children.push(node); persist(); emit('file:created', { path: normalizePath(path), type: 'folder' }); return statNode(node, path); }
+  function fsTouch(path, pid) { if (!checkFs(pid, 'filesystem.write')) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { path: path }); const target = parentAt(path); if (!target.parent || target.parent.type !== 'folder') throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); let node = (target.parent.children || []).find(function (child) { return child.name === target.name; }); if (!node) { node = { id: 'vfs_' + Date.now().toString(36), name: target.name, type: 'file', content: '', owner: 'root', group: 'users', permissions: 'rw-r--r--', createdAt: Date.now(), modifiedAt: Date.now(), accessedAt: Date.now() }; target.parent.children = target.parent.children || []; target.parent.children.push(node); emit('file:created', { path: normalizePath(path), type: 'file' }); } else { node.modifiedAt = Date.now(); } ensureMetadata(node); persist(); return statNode(node, path); }
+  function fsDelete(path, pid) { if (!checkFs(pid, 'filesystem.delete')) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { path: path }); const target = parentAt(path); if (!target.parent) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); const index = (target.parent.children || []).findIndex(function (child) { return child.name === target.name; }); if (index < 0) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); const removed = target.parent.children.splice(index, 1)[0]; const s = requireState(); s.trash = s.trash || []; s.trash.push({ removed: removed, path: normalizePath(path), deletedAt: Date.now() }); persist(); emit('file:deleted', { path: normalizePath(path) }); return true; }
+  function fsRename(path, nextName, pid) { if (!checkFs(pid, 'filesystem.write')) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES, { path: path }); const target = parentAt(path); const node = target.parent && (target.parent.children || []).find(function (child) { return child.name === target.name; }); if (!node) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); node.name = String(nextName); node.modifiedAt = Date.now(); persist(); emit('file:renamed', { path: normalizePath(path), name: node.name }); return statNode(node, normalizePath(path)); }
+  function fsCopy(source, destination, pid) { if (!checkFs(pid, 'filesystem.read') || !checkFs(pid, 'filesystem.write')) throw new ZenError('EACCES', ERRNO_MESSAGES.EACCES); const sourceNode = nodeAt(source); const target = parentAt(destination); if (!sourceNode || !target.parent) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: destination }); const copy = JSON.parse(JSON.stringify(sourceNode)); copy.id = 'vfs_' + Date.now().toString(36); copy.name = target.name; target.parent.children.push(copy); persist(); emit('file:created', { path: normalizePath(destination), copiedFrom: normalizePath(source) }); return statNode(copy, destination); }
   function fsMove(source, destination, pid) { const result = fsCopy(source, destination, pid); fsDelete(source, pid); return result; }
   function statNode(node, path) { ensureMetadata(node); return { id: node.id, name: node.name, path: normalizePath(path), type: node.type, size: node.size, owner: node.owner, group: node.group, permissions: node.permissions, mime: node.mime || '', assetPath: node.assetPath || '', createdAt: node.createdAt, modifiedAt: node.modifiedAt, accessedAt: node.accessedAt }; }
-  function fsStat(path) { const node = nodeAt(path); if (!node) throw new ZenError('ENOENT', 'Path not found'); return statNode(node, path); }
-  function fsReaddir(path) { const node = nodeAt(path); if (!node || node.type !== 'folder') throw new ZenError('ENOTDIR', 'Not a directory'); return (node.children || []).map(function (child) { return statNode(child, normalizePath(path) + '/' + child.name); }); }
-  function fsChmod(path, permissions, pid) { const node = nodeAt(path); if (!node) throw new ZenError('ENOENT', 'Path not found'); if (pid && node.owner !== 'root' && !checkPermission(pid, 'filesystem.write')) throw new ZenError('EPERM', 'Permission denied'); node.permissions = String(permissions); node.modifiedAt = Date.now(); persist(); return statNode(node, path); }
-  function fsChown(path, owner, pid) { const node = nodeAt(path); if (!node) throw new ZenError('ENOENT', 'Path not found'); if (pid && !checkPermission(pid, 'filesystem.write')) throw new ZenError('EPERM', 'Permission denied'); node.owner = String(owner); persist(); return statNode(node, path); }
+  function fsStat(path) { const node = nodeAt(path); if (!node) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); return statNode(node, path); }
+  function fsReaddir(path) { const node = nodeAt(path); if (!node || node.type !== 'folder') throw new ZenError('ENOTDIR', ERRNO_MESSAGES.ENOTDIR, { path: path }); return (node.children || []).map(function (child) { return statNode(child, normalizePath(path) + '/' + child.name); }); }
+  function fsChmod(path, permissions, pid) { const node = nodeAt(path); if (!node) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); if (pid && node.owner !== 'root' && !checkPermission(pid, 'filesystem.write')) throw new ZenError('EPERM', ERRNO_MESSAGES.EPERM, { path: path }); node.permissions = String(permissions); node.modifiedAt = Date.now(); persist(); return statNode(node, path); }
+  function fsChown(path, owner, pid) { const node = nodeAt(path); if (!node) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { path: path }); if (pid && !checkPermission(pid, 'filesystem.write')) throw new ZenError('EPERM', ERRNO_MESSAGES.EPERM, { path: path }); node.owner = String(owner); persist(); return statNode(node, path); }
   function fsUsage() { let files = 0; let bytes = 0; function visit(node) { ensureMetadata(node); if (node.type === 'file') { files += 1; bytes += node.size; } (node.children || []).forEach(visit); } visit(requireState().fs); return { files: files, bytes: bytes, quota: 64 * 1024 * 1024 }; }
   function filesystemTree(node) { ensureMetadata(node); return { name: node.name, type: node.type, size: node.size, owner: node.owner, permissions: node.permissions, children: (node.children || []).map(filesystemTree) }; }
 
   function permissionList(pid) { const process = ensureProcess(pid); return process.permissions.slice(); }
   function checkPermission(pid, permission) { const process = ensureProcess(pid); return process.permissions.includes(permission); }
-  function requestPermission(pid, permission) { if (!PERMISSIONS.includes(permission)) throw new ZenError('EINVAL', 'Unknown permission'); return checkPermission(pid, permission); }
-  function grantPermission(pid, permission) { const process = ensureProcess(pid); if (!PERMISSIONS.includes(permission)) throw new ZenError('EINVAL', 'Unknown permission'); if (!process.permissions.includes(permission)) process.permissions.push(permission); emit('permission:granted', { pid: process.pid, permission: permission }); return true; }
+  function requestPermission(pid, permission) { if (!PERMISSIONS.includes(permission)) throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { permission: permission }); return checkPermission(pid, permission); }
+  function grantPermission(pid, permission) { const process = ensureProcess(pid); if (!PERMISSIONS.includes(permission)) throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { permission: permission }); if (!process.permissions.includes(permission)) process.permissions.push(permission); emit('permission:granted', { pid: process.pid, permission: permission }); return true; }
   function revokePermission(pid, permission) { const process = ensureProcess(pid); process.permissions = process.permissions.filter(function (item) { return item !== permission; }); emit('permission:revoked', { pid: process.pid, permission: permission }); return true; }
 
   function syscall(name, args, callerPid) {
     args = args || [];
     const parts = String(name).split('.'); const group = parts[0]; const method = parts[1];
-    const target = kernel[group]; if (!target || typeof target[method] !== 'function') throw new ZenError('ENOSYS', 'Unknown system call', { name: name });
-    const permissionMap = { write: 'filesystem.write', delete: 'filesystem.delete', mkdir: 'filesystem.write', kill: 'process.control', suspend: 'process.control', resume: 'process.control', spawn: 'process.spawn' };
-    if (callerPid && permissionMap[method] && !checkPermission(callerPid, permissionMap[method])) throw new ZenError('EPERM', 'System call permission denied', { name: name, pid: callerPid });
+    const target = kernel[group]; if (!target || typeof target[method] !== 'function') throw new ZenError('ENOSYS', ERRNO_MESSAGES.ENOSYS, { name: name });
+    const permissionMap = {
+      write: 'filesystem.write', delete: 'filesystem.delete', mkdir: 'filesystem.write', rename: 'filesystem.write',
+      copy: 'filesystem.write', move: 'filesystem.write', chmod: 'filesystem.write', chown: 'filesystem.write',
+      open: 'filesystem.read', read: 'filesystem.read',
+      kill: 'process.control', suspend: 'process.control', resume: 'process.control', signal: 'process.control',
+      spawn: 'process.spawn', create: 'process.spawn'
+    };
+    if (callerPid && permissionMap[method] && !checkPermission(callerPid, permissionMap[method])) throw new ZenError('EPERM', ERRNO_MESSAGES.EPERM, { name: name, pid: callerPid });
     return target[method].apply(null, args);
   }
 
@@ -305,15 +390,15 @@
   function terminateWorker(pid) { const item = workers.get(Number(pid)); if (!item) return false; item.worker.terminate(); item.status = 'terminated'; workers.delete(Number(pid)); if (processes.has(Number(pid))) terminateProcess(Number(pid), 0); return true; }
 
   function compareVersions(left, right) { return String(left).split('.').map(Number).reduce(function (value, part, index) { return value || (part - (Number(String(right).split('.')[index]) || 0)); }, 0); }
-  function installPackage(manifest) { const s = requireState(); const packageData = Object.assign({ version: '1.0.0', dependencies: [], permissions: ['filesystem.read'], size: 0 }, manifest); if (!packageData.id) throw new ZenError('EINVAL', 'Package id is required'); s.packages = s.packages || {}; (packageData.dependencies || []).forEach(function (dependency) { if (!s.packages[dependency]) throw new ZenError('ENOENT', 'Missing package dependency', { dependency: dependency }); }); if (s.packages[packageData.id] && compareVersions(s.packages[packageData.id].version, packageData.version) >= 0) throw new ZenError('EEXIST', 'Package version is already installed'); s.packages[packageData.id] = packageData; s.installedApps = Array.from(new Set((s.installedApps || []).concat(packageData.id))); persist(); emit('package:installed', packageData); return packageData; }
-  function uninstallPackage(id) { const s = requireState(); s.packages = s.packages || {}; if (!s.packages[id]) throw new ZenError('ENOENT', 'Package not installed'); delete s.packages[id]; s.installedApps = (s.installedApps || []).filter(function (item) { return item !== id; }); persist(); emit('package:uninstalled', { id: id }); return true; }
+  function installPackage(manifest) { const s = requireState(); const packageData = Object.assign({ version: '1.0.0', dependencies: [], permissions: ['filesystem.read'], size: 0 }, manifest); if (!packageData.id) throw new ZenError('EINVAL', ERRNO_MESSAGES.EINVAL, { field: 'id' }); s.packages = s.packages || {}; (packageData.dependencies || []).forEach(function (dependency) { if (!s.packages[dependency]) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { dependency: dependency }); }); if (s.packages[packageData.id] && compareVersions(s.packages[packageData.id].version, packageData.version) >= 0) throw new ZenError('EEXIST', ERRNO_MESSAGES.EEXIST, { id: packageData.id }); s.packages[packageData.id] = packageData; s.installedApps = Array.from(new Set((s.installedApps || []).concat(packageData.id))); persist(); emit('package:installed', packageData); return packageData; }
+  function uninstallPackage(id) { const s = requireState(); s.packages = s.packages || {}; if (!s.packages[id]) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { id: id }); delete s.packages[id]; s.installedApps = (s.installedApps || []).filter(function (item) { return item !== id; }); persist(); emit('package:uninstalled', { id: id }); return true; }
   function listPackages() { const s = requireState(); return Object.values(s.packages || {}); }
-  function packageInfo(id) { const item = listPackages().find(function (pkg) { return pkg.id === id; }); if (!item) throw new ZenError('ENOENT', 'Package not found'); return item; }
+  function packageInfo(id) { const item = listPackages().find(function (pkg) { return pkg.id === id; }); if (!item) throw new ZenError('ENOENT', ERRNO_MESSAGES.ENOENT, { id: id }); return item; }
   function updatePackages() { return listPackages().map(function (pkg) { const next = Object.assign({}, pkg, { updatedAt: Date.now() }); requireState().packages[pkg.id] = next; return next; }); }
 
   function snapshot() { return { status: stateRef ? 'online' : 'offline', version: kernel.version, bootTime: bootAt, uptime: bootAt ? Date.now() - bootAt : 0, process: processStats(), memory: memoryStats(), filesystem: stateRef ? fsUsage() : null, scheduler: Object.assign({}, kernel.scheduler), devices: kernel.devices.list(), services: kernel.services.list(), packages: listPackages(), eventCount: eventCount }; }
   function doctor() {
-    const checks = [['Kernel', !!stateRef], ['Process Manager', processes.size > 0], ['Scheduler', !!schedulerTimer], ['Memory Manager', memoryStats().free >= 0], ['VFS', !!(stateRef && stateRef.fs)], ['Permissions', PERMISSIONS.length > 0], ['IPC', subscribers instanceof Map], ['Package Manager', !!stateRef], ['Devices', devices.size >= 7], ['Services', services.size >= 5], ['Persistence', typeof global.saveState === 'function'], ['Shell', typeof global.ZenShell !== 'undefined']];
+    const checks = [['Kernel', !!stateRef], ['Process Manager', processes.size > 0], ['Scheduler', !!schedulerTimer], ['Memory Manager', memoryStats().free >= 0], ['VFS', !!(stateRef && stateRef.fs)], ['Permissions', PERMISSIONS.length > 0], ['IPC', subscribers instanceof Map], ['Package Manager', !!stateRef], ['Devices', devices.size >= 7], ['Services', services.size >= 5], ['Signals', typeof signalProcess === 'function'], ['Persistence', typeof global.saveState === 'function'], ['Shell', typeof global.ZenShell !== 'undefined']];
     return checks.map(function (item) { return { name: item[0], pass: !!item[1] }; });
   }
 
