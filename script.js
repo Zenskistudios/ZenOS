@@ -1560,22 +1560,23 @@ function renderBrowser(body, w){
 
 /* ---- YOUTUBE (PlayTube) — real YouTube thumbnails + real embedded player ---- */
 function renderYoutube(body, w){
-  const inst = winInstances[w.id]; inst.view = inst.view || {screen:'home', videos:[], query:''};
+  const inst = winInstances[w.id];
+  inst.view = inst.view || {screen:'home'};
+  inst.videos = inst.videos || [];
+  inst.query = inst.query || '';
+  inst.loading = inst.loading || false;
+  inst.error = inst.error || null;
   const fallback = VIDEO_CATALOG.map(v=>({id:v.id,title:v.title,channel:v.channel,publishedAt:'',description:'',thumbnail:`https://img.youtube.com/vi/${v.id}/mqdefault.jpg`}));
   async function loadVideos(query){
-    inst.loading=true; draw();
-    try{
-      const response=await fetch('/api/youtube?q='+encodeURIComponent(query));
-      if(!response.ok) throw new Error((await response.json()).error||'YouTube service unavailable');
-      const data=await response.json();
-      inst.videos = (data.videos && data.videos.length) ? data.videos : fallback;
-      inst.query=query;
-      inst.error=null;
-    }catch(error){
-      inst.error=error.message;
-      if(!inst.videos.length) inst.videos = fallback;
-    }
-    inst.loading=false; draw();
+    // No backend exists for /api/youtube in this frontend-only build, so
+    // there's nothing to actually fetch from — use the built-in catalog,
+    // which already has real video IDs and real youtube.com thumbnails.
+    inst.loading = true; draw();
+    inst.videos = fallback;
+    inst.query = query;
+    inst.error = null;
+    inst.loading = false;
+    draw();
   }
   function draw(){
     if(inst.view.screen==='watch'){
