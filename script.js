@@ -1504,58 +1504,208 @@ function normalizeUrl(raw){
   // otherwise treat as a search query
   return 'https://duckduckgo.com/html/?q=' + encodeURIComponent(raw);
 }
+const ZB_HOME = 'https://duckduckgo.com/html/';
+function zbNewTabState(url){ const u = url||ZB_HOME; return {id:uid('tab'), url:u, input:u, history:[u], hi:0, blocked:false, loading:true, zoom:100}; }
 function renderBrowser(body, w){
   const inst = winInstances[w.id];
-  inst.tabs = inst.tabs || [{url:'https://example.com', input:'https://example.com', history:['https://example.com'], hi:0, blocked:false}];
+  inst.tabs = inst.tabs && inst.tabs.length ? inst.tabs : [zbNewTabState()];
+  inst.tabs.forEach(t=>{ t.id = t.id || uid('tab'); t.zoom = t.zoom || 100; });
   inst.active = inst.active ?? 0;
-  function draw(){
-    const tab = inst.tabs[inst.active];
-    body.innerHTML = `<div class="app">
-      <div class="app-toolbar" style="gap:6px;">
-        ${inst.tabs.map((t,i)=>`<div class="pill" data-tab="${i}" style="background:${i===inst.active?'var(--panel-strong)':'var(--panel)'};">${escapeHtml((t.input||t.url).replace(/^https?:\/\//,'').slice(0,16))} ${inst.tabs.length>1?'<span data-close-tab="'+i+'" style="margin-left:6px;">×</span>':''}</div>`).join('')}
-        <button class="pill" id="br-newtab">+</button>
-      </div>
-      <div class="app-toolbar">
-        <button class="pill" id="br-back">←</button><button class="pill" id="br-fwd">→</button><button class="pill" id="br-reload">⟳</button>
-        <input class="search" id="br-address" value="${escapeHtml(tab.input||tab.url)}" placeholder="Search the web or enter a URL">
-        <button class="pill" id="br-bookmark">☆</button>
-        <button class="pill" id="br-newwin" title="Open in a new browser tab">↗ Open in new tab</button>
-      </div>
-      <div style="display:flex; gap:6px; padding:8px 14px 0;">${state.browserBookmarks.map(b=>`<div class="pill" data-bm="${b.url}" style="font-size:11px;">⭐ ${escapeHtml(b.title)}</div>`).join('')}</div>
-      ${tab.blocked ? `<div style="margin:10px 14px 0; padding:9px 12px; border-radius:0; background:rgba(255,107,107,0.13); border:1px solid rgba(255,107,107,0.3); font-size:11.5px; color:var(--text-2);">This site refused to load inside an embedded frame (its X-Frame-Options/CSP policy blocks embedding — most banks, social networks, and Google properties do this). Use "Open in new tab" instead.</div>` : ''}
-      <div style="flex:1; position:relative; margin:10px 14px 14px; border-radius:0; overflow:hidden; background:#fff;">
-        <iframe id="br-frame" src="${escapeHtml(tab.url)}" style="width:100%; height:100%; border:none; display:block;" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
-      </div>
-    </div>`;
-    body.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click', e=>{ if(e.target.dataset.closeTab) return; inst.active=+el.dataset.tab; draw(); }));
-    body.querySelectorAll('[data-close-tab]').forEach(el=>el.addEventListener('click', e=>{ e.stopPropagation(); const i=+el.dataset.closeTab; inst.tabs.splice(i,1); inst.active=Math.max(0,inst.active-1); draw(); }));
-    body.querySelector('#br-newtab').addEventListener('click', ()=>{ inst.tabs.push({url:'https://example.com', input:'https://example.com', history:['https://example.com'], hi:0, blocked:false}); inst.active=inst.tabs.length-1; draw(); });
-    function navigate(rawInput){
-      const url = normalizeUrl(rawInput);
-      if(!url) return;
-      tab.input = rawInput; tab.url = url; tab.blocked = false;
-      tab.history = tab.history.slice(0, tab.hi+1); tab.history.push(url); tab.hi++;
-      state.browserHistory.push(url); saveState(); draw();
+  if(inst.active >= inst.tabs.length) inst.active = inst.tabs.length-1;
+  const frames = {}; // tabId -> persistent iframe element (switching tabs never reloads them)
+  let menuOpen = false;
+
+  body.innerHTML = `<div class="app">
+    <div id="br-chrome"></div>
+    <div id="br-frame-host" style="flex:1; position:relative; margin:10px 14px 14px; overflow:hidden; background:#fff;"></div>
+  </div>`;
+  const chromeEl = body.querySelector('#br-chrome');
+  const frameHost = body.querySelector('#br-frame-host');
+
+  function activeTab(){ return inst.tabs[inst.active]; }
+  function hostnameOf(url){ try{ return new URL(url).hostname; }catch(e){ return ''; } }
+  function faviconFor(url){ const h=hostnameOf(url); return h?`https://www.google.com/s2/favicons?domain=${h}&sz=32`:''; }
+  function isBookmarked(url){ return state.browserBookmarks.some(b=>b.url===url); }
+
+  function ensureFrame(tab){
+    let el = frames[tab.id];
+    if(!el){
+      el = document.createElement('iframe');
+      el.className = 'zb-frame';
+      el.style.display = 'none';
+      el.referrerPolicy = 'no-referrer';
+      el.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+      el.src = tab.url;
+      // Note on detection: browsers don't fire a script-visible signal when a
+      // cross-origin site's X-Frame-Options/CSP refuses to render inside a frame
+      // (that silence is itself the security boundary). 'load' still fires for
+      // most cases so we use it to clear the loading bar; hard network errors
+      // fire 'error' and show the blocked banner; silent X-Frame-Options
+      // refusals show as a blank frame, which is why the menu always offers
+      // "Open in real new tab" as an escape hatch.
+      el.addEventListener('load', ()=>{ tab.loading=false; if(activeTab()===tab) syncLoadbar(); });
+      el.addEventListener('error', ()=>{ tab.loading=false; tab.blocked=true; if(activeTab()===tab) drawChrome(); });
+      frameHost.appendChild(el);
+      frames[tab.id] = el;
     }
-    body.querySelector('#br-address').addEventListener('keydown', e=>{ if(e.key==='Enter') navigate(e.target.value.trim()); });
-    body.querySelector('#br-back').addEventListener('click', ()=>{ if(tab.hi>0){ tab.hi--; tab.url=tab.history[tab.hi]; tab.input=tab.url; tab.blocked=false; draw(); } });
-    body.querySelector('#br-fwd').addEventListener('click', ()=>{ if(tab.hi<tab.history.length-1){ tab.hi++; tab.url=tab.history[tab.hi]; tab.input=tab.url; tab.blocked=false; draw(); } });
-    body.querySelector('#br-reload').addEventListener('click', draw);
-    body.querySelector('#br-bookmark').addEventListener('click', ()=>{ state.browserBookmarks.push({title:tab.url.replace(/^https?:\/\//,'').split('/')[0], url:tab.url}); saveState(); draw(); notify('Bookmark added', tab.url, '⭐', '#ffb35c'); });
-    body.querySelector('#br-newwin').addEventListener('click', ()=>{ window.open(tab.url, '_blank', 'noopener'); });
-    body.querySelectorAll('[data-bm]').forEach(el=>el.addEventListener('click', ()=>navigate(el.dataset.bm)));
-    // Note on detection: browsers don't fire a script-visible signal when a
-    // cross-origin site's X-Frame-Options/CSP refuses to render inside a frame
-    // (that silence is itself the security boundary — script can't read into a
-    // blocked cross-origin frame to check). The banner above only appears when
-    // the browser's own frame 'error' event fires, which happens for some
-    // hard network failures; most X-Frame-Options refusals show as a blank
-    // frame instead, which is why "Open in new tab" is always offered.
-    const frame = body.querySelector('#br-frame');
-    let settled = false;
-    frame.addEventListener('error', ()=>{ if(settled) return; settled=true; tab.blocked = true; draw(); });
+    return el;
   }
-  draw();
+  function showActiveFrame(){
+    const tab = activeTab();
+    Object.keys(frames).forEach(id=>{ frames[id].style.display = 'none'; });
+    ensureFrame(tab).style.display = 'block';
+  }
+  function syncLoadbar(){
+    const bar = chromeEl.querySelector('#br-loadbar');
+    if(bar) bar.classList.toggle('loading', !!activeTab().loading);
+    const reloadBtn = chromeEl.querySelector('#br-reload');
+    if(reloadBtn) reloadBtn.textContent = activeTab().loading ? '✕' : '⟳';
+  }
+
+  function navigate(rawInput){
+    const url = normalizeUrl(rawInput);
+    if(!url) return;
+    const tab = activeTab();
+    tab.input = rawInput; tab.url = url; tab.blocked = false; tab.loading = true;
+    tab.history = tab.history.slice(0, tab.hi+1); tab.history.push(url); tab.hi++;
+    state.browserHistory.push(url); saveState();
+    ensureFrame(tab).src = url;
+    drawChrome();
+  }
+  function goHistory(dir){
+    const tab = activeTab(); const ni = tab.hi + dir;
+    if(ni<0 || ni>=tab.history.length) return;
+    tab.hi = ni; tab.url = tab.history[ni]; tab.input = tab.url; tab.blocked=false; tab.loading=true;
+    ensureFrame(tab).src = tab.url;
+    drawChrome();
+  }
+  function reloadOrStop(){
+    const tab = activeTab(); const frame = ensureFrame(tab);
+    if(tab.loading){ frame.src = 'about:blank'; tab.loading=false; drawChrome(); return; }
+    tab.loading = true; drawChrome();
+    frame.src = 'about:blank';
+    setTimeout(()=>{ frame.src = tab.url; }, 10);
+  }
+  function addTab(url){
+    const t = zbNewTabState(url);
+    inst.tabs.push(t); inst.active = inst.tabs.length-1;
+    ensureFrame(t); showActiveFrame(); drawChrome();
+  }
+  function closeTab(i){
+    const t = inst.tabs[i]; const frame = frames[t.id];
+    if(frame){ frame.remove(); delete frames[t.id]; }
+    inst.tabs.splice(i,1);
+    if(!inst.tabs.length) inst.tabs.push(zbNewTabState());
+    if(i<=inst.active) inst.active = Math.max(0, inst.active-1);
+    inst.active = Math.min(inst.active, inst.tabs.length-1);
+    showActiveFrame(); drawChrome();
+  }
+  function switchTab(i){ inst.active=i; showActiveFrame(); drawChrome(); }
+  function toggleBookmark(){
+    const tab = activeTab();
+    const idx = state.browserBookmarks.findIndex(b=>b.url===tab.url);
+    if(idx>=0){ state.browserBookmarks.splice(idx,1); notify('Bookmark removed', tab.url, '☆', '#a99fd6'); }
+    else{ state.browserBookmarks.push({title:hostnameOf(tab.url)||tab.url, url:tab.url}); notify('Bookmark added', tab.url, '⭐', '#ffb35c'); }
+    saveState(); drawChrome();
+  }
+  function setZoom(delta, reset){
+    const tab = activeTab();
+    tab.zoom = reset ? 100 : Math.max(50, Math.min(200, tab.zoom + delta));
+    const frame = frames[tab.id];
+    if(frame) frame.style.zoom = tab.zoom + '%';
+    drawChrome();
+  }
+
+  function drawChrome(){
+    const tab = activeTab();
+    const lock = /^https:/i.test(tab.url) ? '🔒' : /duckduckgo\.com\/html/i.test(tab.url) ? '🔍' : '⚠️';
+    chromeEl.innerHTML = `
+      <div class="zb-tabs">
+        ${inst.tabs.map((t,i)=>`<div class="zb-tab ${i===inst.active?'active':''}" data-tab="${i}" title="${escapeHtml(t.input||t.url)}">
+          ${faviconFor(t.url)?`<img class="fav" src="${faviconFor(t.url)}" onerror="this.style.display='none'">`:'<span class="fav" style="font-size:11px;">🌐</span>'}
+          <span class="lbl">${escapeHtml((t.input||t.url).replace(/^https?:\/\//,'').slice(0,24)||'New Tab')}</span>
+          ${inst.tabs.length>1?`<span class="zb-close" data-close-tab="${i}">×</span>`:''}
+        </div>`).join('')}
+        <button class="zb-newtab" id="br-newtab" title="New tab">+</button>
+      </div>
+      <div class="zb-navbar">
+        <button class="zb-navbtn" id="br-back" title="Back" ${tab.hi>0?'':'disabled'}>←</button>
+        <button class="zb-navbtn" id="br-fwd" title="Forward" ${tab.hi<tab.history.length-1?'':'disabled'}>→</button>
+        <button class="zb-navbtn" id="br-reload" title="${tab.loading?'Stop':'Reload'}">${tab.loading?'✕':'⟳'}</button>
+        <button class="zb-navbtn" id="br-home" title="Home">⌂</button>
+        <div class="zb-address-wrap">
+          <span class="lock">${lock}</span>
+          <input id="br-address" value="${escapeHtml(tab.input||tab.url)}" placeholder="Search the web or enter a URL">
+        </div>
+        <button class="zb-navbtn zb-star ${isBookmarked(tab.url)?'on':''}" id="br-bookmark" title="Bookmark this page">${isBookmarked(tab.url)?'★':'☆'}</button>
+        <button class="zb-navbtn" id="br-menu" title="Menu">⋮</button>
+        <div class="zb-menu ${menuOpen?'open':''}" id="br-menu-dd">
+          <div class="zb-menu-item" data-m="newtab">🗗 New Tab</div>
+          <div class="zb-menu-item" data-m="newwin">↗ Open in real new tab</div>
+          <div class="zb-menu-sep"></div>
+          <div class="zb-menu-item" data-m="zoomout">－ Zoom Out</div>
+          <div class="zb-menu-item" data-m="zoomreset">${tab.zoom}% · Reset Zoom</div>
+          <div class="zb-menu-item" data-m="zoomin">＋ Zoom In</div>
+          <div class="zb-menu-sep"></div>
+          <div class="zb-menu-label">Bookmarks</div>
+          <div class="zb-menu-sub">${state.browserBookmarks.length?state.browserBookmarks.map((b,i)=>`<div class="zb-menu-sub-item" data-bm="${escapeHtml(b.url)}"><span style="flex:1; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(b.title)}</span><span class="rm" data-rmbm="${i}">×</span></div>`).join(''):'<div class="zb-menu-sub-item" style="color:var(--text-3);">No bookmarks yet</div>'}</div>
+          <div class="zb-menu-sep"></div>
+          <div class="zb-menu-label">History ${state.browserHistory.length?'<span class="zb-clear" data-m="clearhistory">Clear</span>':''}</div>
+          <div class="zb-menu-sub">${state.browserHistory.length?state.browserHistory.slice(-8).reverse().map(u=>`<div class="zb-menu-sub-item" data-hurl="${escapeHtml(u)}"><span style="flex:1; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(u.replace(/^https?:\/\//,''))}</span></div>`).join(''):'<div class="zb-menu-sub-item" style="color:var(--text-3);">No history yet</div>'}</div>
+        </div>
+      </div>
+      <div class="zb-loadbar ${tab.loading?'loading':''}" id="br-loadbar"></div>
+      ${state.browserBookmarks.length?`<div class="zb-bookmarks-bar">${state.browserBookmarks.map(b=>`<div class="pill" data-bm="${escapeHtml(b.url)}" style="font-size:10.5px;">⭐ ${escapeHtml(b.title)}</div>`).join('')}</div>`:''}
+      ${tab.blocked ? `<div style="margin:10px 14px 0; padding:9px 12px; background:rgba(255,107,107,0.13); border:1px solid rgba(255,107,107,0.3); font-size:11.5px; color:var(--text-2);">This site refused to load inside an embedded frame (its X-Frame-Options/CSP policy blocks embedding — most banks, social networks, and Google properties do this). Use the ⋮ menu's "Open in real new tab" instead.</div>` : ''}
+    `;
+    bindChrome();
+  }
+
+  function bindChrome(){
+    chromeEl.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click', e=>{ if(e.target.dataset.closeTab) return; switchTab(+el.dataset.tab); }));
+    chromeEl.querySelectorAll('[data-close-tab]').forEach(el=>el.addEventListener('click', e=>{ e.stopPropagation(); closeTab(+el.dataset.closeTab); }));
+    chromeEl.querySelector('#br-newtab').addEventListener('click', ()=>addTab());
+    const addressInput = chromeEl.querySelector('#br-address');
+    addressInput.addEventListener('keydown', e=>{
+      if(e.key==='Enter') navigate(e.target.value.trim());
+      else if(e.key==='Escape'){ e.target.value = activeTab().input||activeTab().url; e.target.blur(); }
+    });
+    addressInput.addEventListener('focus', e=>e.target.select());
+    chromeEl.querySelector('#br-back').addEventListener('click', ()=>goHistory(-1));
+    chromeEl.querySelector('#br-fwd').addEventListener('click', ()=>goHistory(1));
+    chromeEl.querySelector('#br-reload').addEventListener('click', reloadOrStop);
+    chromeEl.querySelector('#br-home').addEventListener('click', ()=>navigate(ZB_HOME));
+    chromeEl.querySelector('#br-bookmark').addEventListener('click', toggleBookmark);
+    const menuBtn = chromeEl.querySelector('#br-menu');
+    const menuDd = chromeEl.querySelector('#br-menu-dd');
+    menuBtn.addEventListener('click', e=>{ e.stopPropagation(); menuOpen = !menuOpen; menuDd.classList.toggle('open', menuOpen); });
+    menuDd.querySelectorAll('[data-m]').forEach(el=>el.addEventListener('click', e=>{
+      e.stopPropagation();
+      const m = el.dataset.m;
+      if(m==='newtab') addTab();
+      else if(m==='newwin') window.open(activeTab().url, '_blank', 'noopener');
+      else if(m==='zoomin') setZoom(10);
+      else if(m==='zoomout') setZoom(-10);
+      else if(m==='zoomreset') setZoom(0, true);
+      else if(m==='clearhistory'){ state.browserHistory = []; saveState(); drawChrome(); }
+      menuOpen = false;
+    }));
+    menuDd.querySelectorAll('[data-bm]').forEach(el=>el.addEventListener('click', e=>{ if(e.target.dataset.rmbm!=null) return; menuOpen=false; navigate(el.dataset.bm); }));
+    menuDd.querySelectorAll('[data-rmbm]').forEach(el=>el.addEventListener('click', e=>{ e.stopPropagation(); state.browserBookmarks.splice(+el.dataset.rmbm,1); saveState(); drawChrome(); }));
+    menuDd.querySelectorAll('[data-hurl]').forEach(el=>el.addEventListener('click', ()=>{ menuOpen=false; navigate(el.dataset.hurl); }));
+    chromeEl.querySelectorAll('.zb-bookmarks-bar [data-bm]').forEach(el=>el.addEventListener('click', ()=>navigate(el.dataset.bm)));
+  }
+  document.addEventListener('click', e=>{
+    if(!menuOpen) return;
+    if(e.target.closest('#br-menu-dd') || e.target.closest('#br-menu')) return;
+    menuOpen = false;
+    const dd = chromeEl.querySelector('#br-menu-dd');
+    if(dd) dd.classList.remove('open');
+  });
+
+  ensureFrame(activeTab());
+  showActiveFrame();
+  drawChrome();
 }
 
 /* ---- YOUTUBE (PlayTube) — real YouTube thumbnails + real embedded player ---- */
