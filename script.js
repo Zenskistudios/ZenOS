@@ -807,7 +807,7 @@ function renderStartMenu(){
     <div class="sm-scroll" id="sm-content"></div>
     <div class="sm-footer">
       <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-2);">
-        <div style="width:26px;height:26px;border-radius:0;background:linear-gradient(135deg,var(--accent-1),var(--accent-2));display:flex;align-items:center;justify-content:center;font-size:12px;">👤</div>
+        <div style="width:26px;height:26px;border-radius:0;background:linear-gradient(135deg,var(--accent-1),var(--accent-2));display:flex;align-items:center;justify-content:center;font-size:12px;">🧑</div>
         ${escapeHtml(state.settings.username)}
       </div>
       <div class="sm-power">
