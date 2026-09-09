@@ -1567,6 +1567,29 @@ function renderBrowser(body, w){
 const YOUTUBE_API_KEY = 'AIzaSyBPQ_zBqOvxiwXYc0Ugrd9PTNMBY0Gpdgc';
 const YOUTUBE_REGION = 'NG';
 
+// Loads the real YouTube IFrame Player API once. Using YT.Player (instead of
+// a bare <iframe src=youtube.com/embed/...>) gives us a JS onError callback,
+// so playback failures (embedding disabled, video removed, region-locked,
+// etc.) can be caught and handled inside the app instead of falling back to
+// YouTube's own dead-end "leave this site" error page.
+let ytIframeApiPromise = null;
+function loadYouTubeIframeAPI(){
+  if(window.YT && window.YT.Player) return Promise.resolve(window.YT);
+  if(ytIframeApiPromise) return ytIframeApiPromise;
+  ytIframeApiPromise = new Promise((resolve, reject)=>{
+    const prevReady = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = function(){
+      if(typeof prevReady==='function') prevReady();
+      resolve(window.YT);
+    };
+    const script = document.createElement('script');
+    script.src = 'https://www.youtube.com/iframe_api';
+    script.onerror = ()=>reject(new Error('Could not load YouTube player API'));
+    document.head.appendChild(script);
+  });
+  return ytIframeApiPromise;
+}
+
 function ytFormatViews(n){
   n = Number(n)||0;
   if(n>=1e9) return (n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
@@ -1705,24 +1728,57 @@ function renderYoutube(body, w){
       <div style="display:flex; align-items:center; gap:10px; margin:14px 0;">
         <div style="width:34px; height:34px; background:#ff5c5c33; display:flex; align-items:center; justify-content:center;">📺</div>
         <div style="flex:1;"><b style="font-size:12.5px;">${escapeHtml(v.channel)}</b></div>
-        <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener" class="btn primary" style="text-decoration:none;">Open on YouTube ↗</a>
       </div>`;
+  }
+
+  // If a video can't actually play embedded (owner disabled embedding,
+  // removed, region-locked, etc.) the raw <iframe src=youtube.com/embed/...>
+  // approach shows YouTube's own "leave this site to watch" screen with no
+  // way to intercept it. Using the real IFrame Player API instead gives us
+  // a JS onError event, so we can catch that and keep the user inside
+  // PlayTube with our own message + a way to pick another video.
+  function showUnplayable(reason){
+    const wrap = body.querySelector('#yt-player-wrap');
+    if(!wrap) return;
+    wrap.innerHTML = `<div style="width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; color:var(--text-2); text-align:center; padding:20px;">
+      <div style="font-size:34px;">🚫</div>
+      <div style="font-size:13px; color:var(--text-1); font-weight:600;">This video can't be played here</div>
+      <div style="font-size:11.5px; max-width:320px;">${escapeHtml(reason||"The video owner disabled playback on outside apps like PlayTube.")}</div>
+      <button class="btn primary" id="yt-unplayable-back">← Choose another video</button>
+    </div>`;
+    wrap.querySelector('#yt-unplayable-back').addEventListener('click', ()=>{ inst.view={screen:'home', videoId:null}; draw(); });
+  }
+  async function mountPlayer(videoId){
+    try{
+      const YT = await loadYouTubeIframeAPI();
+      const host = body.querySelector('#yt-player-host');
+      if(!host) return; // user already navigated away
+      new YT.Player(host, {
+        videoId, playerVars:{autoplay:1, rel:0},
+        events:{ onError:(event)=>{
+          const messages = {2:'That video link looks invalid.', 5:"This video can't be played in this browser.", 100:'This video was removed or made private.', 101:'The video owner disabled playback on outside apps like PlayTube.', 150:'The video owner disabled playback on outside apps like PlayTube.'};
+          showUnplayable(messages[event.data]);
+        } }
+      });
+    }catch(e){ showUnplayable('Could not load the video player.'); }
   }
 
   async function drawWatch(){
     let v = inst.lastList.find(x=>x.id===inst.view.videoId) || VIDEO_CATALOG.find(x=>x.id===inst.view.videoId);
+    const videoId = inst.view.videoId;
     body.innerHTML = `<div class="app">
       <div class="app-toolbar"><button class="pill" id="yt-back">← Back</button></div>
       <div class="app-body">
-        <div style="width:100%; aspect-ratio:16/9; overflow:hidden; margin-bottom:14px; background:#000;">
-          <iframe width="100%" height="100%" src="https://www.youtube.com/embed/${inst.view.videoId}?autoplay=1&rel=0" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display:block;"></iframe>
+        <div style="width:100%; aspect-ratio:16/9; overflow:hidden; margin-bottom:14px; background:#000;" id="yt-player-wrap">
+          <div id="yt-player-host" style="width:100%; height:100%;"></div>
         </div>
         <div id="yt-watch-meta">${v?renderWatchMeta(v):'<div class="np-empty">Loading details…</div>'}</div>
       </div></div>`;
     body.querySelector('#yt-back').addEventListener('click', ()=>{ inst.view={screen:'home', videoId:null}; draw(); });
+    mountPlayer(videoId);
     if(!v){
       try{
-        const list = await youtubeVideosListByIds([inst.view.videoId]);
+        const list = await youtubeVideosListByIds([videoId]);
         v = list[0];
         const metaEl = body.querySelector('#yt-watch-meta');
         if(v && metaEl) metaEl.innerHTML = renderWatchMeta(v);
