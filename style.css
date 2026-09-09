@@ -261,6 +261,20 @@ input,textarea{font-family:inherit; color:inherit; background:none; border:none;
 .grid-cards{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:14px;}
 .progress-track{height:10px; background:#000; border:var(--pixel) solid #000; overflow:hidden;}
 .progress-fill{height:100%; background:repeating-linear-gradient(90deg, var(--accent-1) 0 6px, var(--accent-2) 6px 12px);}
+
+/* ---------- NEBULA CRASH (real minigame) ---------- */
+.nc-wrap{height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;}
+.nc-panel{display:flex; flex-direction:column; align-items:center; gap:10px; background:var(--panel-strong); border:var(--pixel) solid #000; box-shadow:5px 5px 0 rgba(0,0,0,.6); padding:28px 32px; text-align:center;}
+.nc-icon{font-size:44px;}
+.nc-title{font-family:var(--font-display); font-size:15px; color:var(--text-1);}
+.nc-sub{font-size:10.5px; color:var(--text-3); max-width:260px; line-height:1.5;}
+.nc-best{font-size:11px; color:var(--accent-2);}
+.nc-score-line{font-family:var(--font-display); font-size:12px; color:var(--text-1);}
+.nc-panel .btn, .nc-panel .pill{width:200px; justify-content:center; margin-top:4px;}
+.nc-hud{display:flex; align-items:center; gap:16px; font-size:11px; color:var(--text-2); margin-bottom:10px;}
+.nc-hud b{color:var(--accent-2); font-family:var(--font-display); font-size:11px;}
+.nc-hud .pill{margin-left:auto;}
+.nc-canvas{background:var(--bg-void); border:var(--pixel) solid #000; box-shadow:4px 4px 0 rgba(0,0,0,.6); image-rendering:pixelated;}
 .wavelength{--wl-black:#080808;--wl-sidebar:#101010;--wl-surface:#181818;--wl-surface-2:#242424;--wl-muted:#a7a7a7;--wl-green:#1ed760;background:var(--wl-black);color:#fff;font-family:Arial,sans-serif;letter-spacing:0;}
 .wavelength .wl-auth{height:38px;padding:0 16px;display:flex;align-items:center;gap:8px;background:var(--wl-black);color:var(--wl-muted);font-size:10px;letter-spacing:.04em;}
 .wavelength .wl-auth-dot{width:8px;height:8px;border-radius:50%;background:var(--wl-muted);}
@@ -334,4 +348,11 @@ body.custom-cursor, body.custom-cursor *{cursor:none !important;}
 .login-input{width:100%; background:var(--panel); border:var(--pixel) solid #000; box-shadow:inset 2px 2px 0 rgba(0,0,0,.5); padding:10px 12px; font-size:12px; color:var(--text-1); text-align:center;}
 .login-switch{font-size:9px; color:var(--accent-2); cursor:pointer; text-align:center; line-height:1.6;}
 #custom-cursor-img{position:fixed; width:48px; height:48px; object-fit:contain; pointer-events:none; z-index:10001; image-rendering:pixelated; opacity:0; transition:opacity .08s linear; filter:drop-shadow(3px 3px 0 rgba(0,0,0,.6)); left:0; top:0; margin:0;}
+
+/* ---------- PIXELPAINT ---------- */
+.pp-color{width:34px; height:34px; padding:2px; background:var(--panel); border:var(--pixel) solid #000; cursor:pointer; box-shadow:2px 2px 0 #000;}
+.pp-sizes{display:flex; align-items:center; gap:6px;}
+.pp-sizes input[type="range"]{width:110px;}
+.pp-canvas-wrap{flex:1; display:flex; padding:12px; overflow:hidden; background:var(--panel);}
+.pp-canvas{flex:1; width:100%; height:100%; min-height:0; background:#fff; border:var(--pixel) solid #000; box-shadow:2px 2px 0 #000; cursor:crosshair; touch-action:none;}
 #custom-cursor-img.show{opacity:1;}

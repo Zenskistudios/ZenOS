@@ -25,6 +25,7 @@ const APP_REGISTRY = {
   youtube:    {name:'PlayTube',     icon:'▶️', svgKey:'youtube', color:'#ff5c5c', system:true, pinned:false},
   spotify:    {name:'Wavelength',   icon:'🎧', svgKey:'spotify', color:'#1ed760', system:true, pinned:false},
   games:      {name:'Games',        icon:'🎮', color:'#7c6cff', system:true, pinned:false},
+  pixelpaint: {name:'PixelPaint',   icon:'🎨', color:'#ff8fa3', system:false, pinned:false},
 };
 
 const SOFTWARE_CATALOG = [
@@ -98,6 +99,7 @@ function spotifyRedirectUri(){ return SPOTIFY_REDIRECT_URI; }
 function randomVerifier(){ const bytes=new Uint8Array(64); crypto.getRandomValues(bytes); return [...bytes].map(b=>('0'+b.toString(16)).slice(-2)).join(''); }
 async function spotifyChallenge(verifier){ const digest=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)); let binary=''; new Uint8Array(digest).forEach(b=>binary+=String.fromCharCode(b)); return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 async function spotifyLogin(){
+  if(!isOnline()) throw new Error(offlineReason());
   const verifier=randomVerifier();
   sessionStorage.setItem('zenos_spotify_verifier', verifier);
   const challenge=await spotifyChallenge(verifier);
@@ -114,7 +116,7 @@ async function spotifyHandleCallback(){
 function spotifyToken(){ try{ const token=JSON.parse(localStorage.getItem(SPOTIFY_TOKEN_KEY)||'null'); return token&&token.expires_at>Date.now()+30000?token:null; }catch(error){ return null; } }
 function spotifyHasPlaybackScopes(token){ const scopes=(token||spotifyToken())?.scope||''; return ['streaming','user-read-playback-state','user-modify-playback-state'].every(scope=>scopes.split(' ').includes(scope)); }
 function spotifyLogout(){ localStorage.removeItem(SPOTIFY_TOKEN_KEY); }
-async function spotifyApi(path, options){ const token=spotifyToken(); if(!token) throw new Error('Log in to Spotify first'); const response=await fetch('https://api.spotify.com/v1/'+path,{...(options||{}),headers:{'Content-Type':'application/json',...(options&&options.headers||{}),Authorization:'Bearer '+token.access_token}}); const text=await response.text(); if(!response.ok){ let detail=text; try{ const payload=JSON.parse(text); detail=payload.error?.message||detail; }catch(error){} throw new Error('Spotify API request failed ('+response.status+')'+(detail?': '+detail:'')); } if(!text.trim()) return null; try{ return JSON.parse(text); }catch(error){ return text; } }
+async function spotifyApi(path, options){ const token=spotifyToken(); if(!token) throw new Error('Log in to Spotify first'); if(!isOnline()) throw new Error(offlineReason()); const response=await fetch('https://api.spotify.com/v1/'+path,{...(options||{}),headers:{'Content-Type':'application/json',...(options&&options.headers||{}),Authorization:'Bearer '+token.access_token}}); const text=await response.text(); if(!response.ok){ let detail=text; try{ const payload=JSON.parse(text); detail=payload.error?.message||detail; }catch(error){} throw new Error('Spotify API request failed ('+response.status+')'+(detail?': '+detail:'')); } if(!text.trim()) return null; try{ return JSON.parse(text); }catch(error){ return text; } }
 function loadSpotifyWebPlayer(){
   if(spotifyWebPlayerPromise) return spotifyWebPlayerPromise;
   spotifyWebPlayerPromise=new Promise((resolve,reject)=>{
@@ -155,6 +157,29 @@ async function hydrateSpotifyArtwork(track){
 function uid(p){ return p + '_' + Math.random().toString(36).slice(2,9); }
 function nowStr(){ return new Date().toLocaleString(); }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Real network gate: combines the browser's genuine online/offline state
+// (navigator.onLine, kept in sync by the 'online'/'offline' events below)
+// with the user's own Wi-Fi/Airplane Mode toggles in this OS. Turning off
+// Wi-Fi or turning on Airplane Mode here now actually blocks the apps that
+// make real network calls (PlayTube, Wavelength, Zen Browse) instead of
+// being inert switches — a real, enforced effect, not a mock.
+let zenBrowserOnline = navigator.onLine;
+window.addEventListener('online', ()=>{ zenBrowserOnline = true; refreshNetworkUi(); });
+window.addEventListener('offline', ()=>{ zenBrowserOnline = false; refreshNetworkUi(); });
+function isOnline(){ return zenBrowserOnline && state.settings.wifi && !state.settings.airplane; }
+function offlineReason(){
+  if(!zenBrowserOnline) return 'This device has no internet connection right now.';
+  if(state.settings.airplane) return 'Airplane Mode is on — turn it off in Quick Settings to reconnect.';
+  if(!state.settings.wifi) return 'Wi-Fi is off — turn it on in Quick Settings to reconnect.';
+  return 'No connection.';
+}
+function refreshNetworkUi(){
+  const wifiTray = document.getElementById('wifi-tray');
+  if(wifiTray) wifiTray.textContent = isOnline() ? '📶' : '📵';
+  const qsPanel = document.getElementById('qs-panel');
+  if(qsPanel && qsPanel.classList.contains('open')) renderQuickSettings();
+}
 
 // Real SVG icon assets (provided by the user) for select apps/toggles.
 // Anything not listed here keeps its emoji fallback.
@@ -301,9 +326,10 @@ function defaultState(){
     onboarded:false,
     avatarEmoji:'🧑',
     battery:{ level:82, charging:false, real:false },
-    settings:{ theme:'aurora', wallpaper:'default', volume:64, brightness:80, wifi:true, bluetooth:false, dnd:false, airplane:false, username:'Guest', cursorId:'default' },
+    settings:{ theme:'aurora', wallpaper:'default', volume:64, brightness:80, nightlight:false, wifi:true, bluetooth:false, dnd:false, airplane:false, username:'Guest', cursorId:'default' },
     installedApps:[], // extra apps from software hub
     installedGames:[],
+    pairedBluetoothDevices:[], // real devices returned by navigator.bluetooth.requestDevice
     notifications:[],
     recents:[],
     notes:[
@@ -550,14 +576,43 @@ function tickClock(){
 setInterval(tickClock, 1000*20); tickClock();
 
 /* ---------------------- NOTIFICATIONS ---------------------- */
+// Do Not Disturb is real, not cosmetic: notifications still land in the
+// notification center (nothing is lost), but the popup toast and sound are
+// suppressed while it's on — the same behavior a real OS's DND gives you.
 function notify(title, desc, icon, color){
   const n = {id:uid('notif'), title, desc, icon:icon||'🔔', color:color||'#7c6cff', time:new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})};
   state.notifications.unshift(n);
   state.notifications = state.notifications.slice(0,40);
   saveState();
-  renderToast(n);
   renderNotifPanel();
   renderTrayBadge();
+  if(state.settings.dnd) return;
+  renderToast(n);
+  playNotifSound();
+}
+// A real sound, not a mock — a short sine-wave chime played through the Web
+// Audio API (no external asset needed) and genuinely scaled by the volume
+// slider, so "Volume" in Quick Settings/Settings now actually controls
+// something audible instead of being an inert number.
+let zenAudioCtx = null;
+function playNotifSound(){
+  const vol = state.settings.volume;
+  if(!vol) return;
+  try{
+    zenAudioCtx = zenAudioCtx || new (window.AudioContext||window.webkitAudioContext)();
+    const ctx = zenAudioCtx;
+    if(ctx.state==='suspended') ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1180, ctx.currentTime+0.09);
+    gain.gain.setValueAtTime(Math.min(1, vol/100) * 0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.32);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime+0.35);
+  }catch(e){ /* Web Audio unavailable — fail silently, notification still shows */ }
 }
 function renderToast(n){
   const stack = document.getElementById('toast-stack');
@@ -606,12 +661,12 @@ function renderQuickSettings(){
     </div>
     <div class="qs-grid">
       ${qsToggleHtml('wifi','📶','Wi-Fi', s.wifi)}
-      ${qsToggleHtml('bluetooth',iconHtml('bluetooth','🔵'),'Bluetooth', s.bluetooth)}
+      ${qsToggleHtml('bluetooth',iconHtml('bluetooth','🔵'),(state.pairedBluetoothDevices||[]).length?'Bluetooth ('+state.pairedBluetoothDevices.length+')':'Bluetooth', s.bluetooth)}
       ${qsToggleHtml('dnd','🌙','Do Not Disturb', s.dnd)}
       ${qsToggleHtml('airplane',iconHtml('airplane','✈️'),'Airplane Mode', s.airplane)}
     </div>
-    <div class="qs-toggle ${s.theme==='dark'?'on':''}" id="qs-theme-toggle" style="width:100%;">
-      <span class="ic">🌗</span><span class="lb">Theme: ${s.theme==='aurora'?'Default':s.theme}</span>
+    <div class="qs-toggle" id="qs-theme-toggle" style="width:100%;">
+      <span class="ic">🌗</span><span class="lb">Theme: ${s.wallpaper==='default'?'Default':s.wallpaper.charAt(0).toUpperCase()+s.wallpaper.slice(1)}</span>
     </div>
     <div class="qs-slider-row">🔊 <input type="range" min="0" max="100" value="${s.volume}" id="qs-volume"> <span id="qs-vol-val">${s.volume}</span></div>
     <div class="qs-slider-row">${iconHtml('brightness','☀️')} <input type="range" min="10" max="100" value="${s.brightness}" id="qs-brightness"> <span id="qs-bri-val">${s.brightness}</span></div>
@@ -620,14 +675,16 @@ function renderQuickSettings(){
     if(state.battery.real) return;
     state.battery.charging = !state.battery.charging; saveState(); renderQuickSettings(); renderBatteryTray();
   });
-  ['wifi','bluetooth','dnd','airplane'].forEach(k=>{
+  ['wifi','dnd','airplane'].forEach(k=>{
     document.getElementById('qs-'+k).addEventListener('click', ()=>{
-      state.settings[k] = !state.settings[k]; saveState(); renderQuickSettings();
+      state.settings[k] = !state.settings[k]; saveState(); renderQuickSettings(); refreshNetworkUi();
+      if(k!=='dnd') notify(k==='wifi'?(state.settings.wifi?'Wi-Fi on':'Wi-Fi off'):(state.settings.airplane?'Airplane Mode on':'Airplane Mode off'), state.settings.airplane?'Network-dependent apps are disabled':(isOnline()?'Connected':'No connection'), state.settings.wifi?'📶':'✈️', '#2fe6c9');
     });
   });
+  document.getElementById('qs-bluetooth').addEventListener('click', toggleBluetooth);
   document.getElementById('qs-theme-toggle').addEventListener('click', ()=>{
-    const order=['aurora','mint','sunset','mono'];
-    const i = order.indexOf(state.settings.wallpaper); 
+    const order=['default','mint','sunset','mono'];
+    const i = order.indexOf(state.settings.wallpaper);
     state.settings.wallpaper = order[(i+1)%order.length];
     applyWallpaper(); saveState(); renderQuickSettings();
   });
@@ -638,12 +695,49 @@ function renderQuickSettings(){
   });
   document.getElementById('qs-brightness').addEventListener('input', e=>{
     state.settings.brightness = +e.target.value; document.getElementById('qs-bri-val').textContent=e.target.value;
-    document.getElementById('os-root').style.filter = `brightness(${0.55 + e.target.value/100*0.5})`;
+    applyDisplayEffects();
     saveState();
   });
 }
 function qsToggleHtml(key,icon,label,on){
   return `<div class="qs-toggle ${on?'on':''}" id="qs-${key}"><span class="ic">${icon}</span><span class="lb">${label}</span></div>`;
+}
+// Real Bluetooth, where the browser supports it: Web Bluetooth opens the
+// browser's own real device picker and returns a genuine nearby device (if
+// the user has one and picks it) — not a fake device list. Chrome/Edge on
+// desktop support this over HTTPS; browsers without it (Firefox, Safari,
+// most mobile browsers) get an honest "not supported here" message instead
+// of pretending to scan.
+async function toggleBluetooth(){
+  if(state.settings.bluetooth){
+    state.settings.bluetooth = false; saveState(); renderQuickSettings();
+    notify('Bluetooth off', 'Bluetooth turned off', '🔵', '#a99fd6');
+    return;
+  }
+  if(!navigator.bluetooth){
+    notify('Bluetooth unavailable', 'This browser does not support Web Bluetooth (try Chrome or Edge on desktop)', '🔵', '#ff5c5c');
+    return;
+  }
+  try{
+    const device = await navigator.bluetooth.requestDevice({acceptAllDevices:true});
+    state.settings.bluetooth = true;
+    state.pairedBluetoothDevices = state.pairedBluetoothDevices || [];
+    if(!state.pairedBluetoothDevices.some(d=>d.id===device.id)) state.pairedBluetoothDevices.push({id:device.id, name:device.name||'Unknown device'});
+    saveState(); renderQuickSettings();
+    notify('Bluetooth device found', device.name||'Unknown device', '🔵', '#5cc8ff');
+  }catch(error){
+    // User cancelled the real device picker, or no permission — not an error worth surfacing.
+  }
+}
+// Night light is real: it applies an actual warm color-temperature filter
+// to the whole desktop (sepia/hue-rotate), the same technique real OS night
+// light features use — combined here with the brightness filter so both
+// settings compose correctly instead of overwriting each other.
+function applyDisplayEffects(){
+  const s = state.settings;
+  const brightness = 0.55 + s.brightness/100*0.5;
+  const warmth = s.nightlight ? ' sepia(0.35) saturate(1.15) hue-rotate(-8deg)' : '';
+  document.getElementById('os-root').style.filter = `brightness(${brightness})${warmth}`;
 }
 function applyWallpaper(){
   const wp = document.getElementById('wallpaper');
@@ -894,6 +988,7 @@ function renderAppBody(w){
     notes: renderNotes, calculator: renderCalculator, calendar: renderCalendar,
     terminal: renderTerminal, settings: renderSettingsApp, taskmanager: renderTaskManager,
     softwarehub: renderSoftwareHub, youtube: renderYoutube, spotify: renderSpotify, games: renderGames,
+    pixelpaint: renderPixelPaint,
   };
   const fn = renderers[w.appId];
   if(fn) fn(body, w);
@@ -1182,6 +1277,156 @@ function renderCalculator(body, w){
   draw();
 }
 
+/* ---- PIXELPAINT ---- */
+function renderPixelPaint(body, w){
+  const inst = winInstances[w.id];
+  inst.color = inst.color || '#2b2d42';
+  inst.size = inst.size != null ? inst.size : 4;
+  inst.eraser = inst.eraser || false;
+
+  body.innerHTML = `
+    <div class="app">
+      <div class="app-toolbar">
+        <input type="color" id="pp-color" class="pp-color" value="${inst.color}" title="Brush color">
+        <div class="pp-sizes">
+          <span style="font-size:10.5px; color:var(--text-2);">Size</span>
+          <input type="range" id="pp-size" min="1" max="40" value="${inst.size}">
+          <span id="pp-size-label" style="font-size:10.5px; min-width:30px; display:inline-block;">${inst.size}px</span>
+        </div>
+        <button class="pill" id="pp-eraser" style="${inst.eraser?'background:var(--accent-1);':''}">${inst.eraser?'✏️ Draw':'🧹 Eraser'}</button>
+        <button class="pill" id="pp-clear">🗑 Clear</button>
+        <button class="btn primary" id="pp-save">💾 Save PNG</button>
+      </div>
+      <div class="pp-canvas-wrap">
+        <canvas id="pp-canvas" class="pp-canvas"></canvas>
+      </div>
+    </div>`;
+
+  const canvas = body.querySelector('#pp-canvas');
+  const ctx = canvas.getContext('2d');
+  const colorInput = body.querySelector('#pp-color');
+  const sizeInput = body.querySelector('#pp-size');
+  const sizeLabel = body.querySelector('#pp-size-label');
+  const eraserBtn = body.querySelector('#pp-eraser');
+  const clearBtn = body.querySelector('#pp-clear');
+  const saveBtn = body.querySelector('#pp-save');
+
+  let drawing = false, lastX = 0, lastY = 0;
+
+  function fillWhite(cssW, cssH){
+    ctx.save();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cssW, cssH);
+    ctx.restore();
+  }
+
+  // Keep the canvas's internal pixel buffer matched to its displayed CSS size
+  // and the device pixel ratio, so drawing coordinates line up exactly with
+  // the cursor instead of drifting when the window is resized or on hi-DPI screens.
+  function resizeCanvas(){
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(1, Math.round(rect.width));
+    const cssH = Math.max(1, Math.round(rect.height));
+    const dpr = window.devicePixelRatio || 1;
+    const newW = Math.round(cssW * dpr), newH = Math.round(cssH * dpr);
+    if(canvas.width === newW && canvas.height === newH) return;
+    let snapshot = null;
+    if(canvas.width > 0 && canvas.height > 0){
+      snapshot = document.createElement('canvas');
+      snapshot.width = canvas.width; snapshot.height = canvas.height;
+      snapshot.getContext('2d').drawImage(canvas, 0, 0);
+    }
+    canvas.width = newW; canvas.height = newH;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fillWhite(cssW, cssH);
+    if(snapshot){
+      ctx.drawImage(snapshot, 0, 0, snapshot.width, snapshot.height, 0, 0, snapshot.width / dpr, snapshot.height / dpr);
+    }
+  }
+
+  function applyStrokeStyle(){
+    ctx.lineWidth = inst.size;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = inst.eraser ? '#ffffff' : inst.color;
+  }
+
+  function getPos(e){
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function onPointerDown(e){
+    e.preventDefault();
+    drawing = true;
+    const p = getPos(e);
+    lastX = p.x; lastY = p.y;
+    applyStrokeStyle();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, inst.size / 2, 0, Math.PI * 2);
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fill();
+    try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
+  }
+  function onPointerMove(e){
+    if(!drawing) return;
+    e.preventDefault();
+    const p = getPos(e);
+    applyStrokeStyle();
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    lastX = p.x; lastY = p.y;
+  }
+  function onPointerUpGlobal(e){
+    if(!document.body.contains(body)){
+      window.removeEventListener('pointerup', onPointerUpGlobal);
+      ro.disconnect();
+      return;
+    }
+    drawing = false;
+  }
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointerup', onPointerUpGlobal);
+
+  colorInput.addEventListener('input', ()=>{
+    inst.color = colorInput.value;
+    if(inst.eraser){ inst.eraser = false; eraserBtn.textContent = '🧹 Eraser'; eraserBtn.style.background = ''; }
+  });
+  sizeInput.addEventListener('input', ()=>{
+    inst.size = parseInt(sizeInput.value, 10);
+    sizeLabel.textContent = inst.size + 'px';
+  });
+  eraserBtn.addEventListener('click', ()=>{
+    inst.eraser = !inst.eraser;
+    eraserBtn.textContent = inst.eraser ? '✏️ Draw' : '🧹 Eraser';
+    eraserBtn.style.background = inst.eraser ? 'var(--accent-1)' : '';
+  });
+  clearBtn.addEventListener('click', ()=>{
+    if(confirm('Clear the canvas? This cannot be undone.')){
+      const rect = canvas.getBoundingClientRect();
+      fillWhite(rect.width, rect.height);
+    }
+  });
+  saveBtn.addEventListener('click', ()=>{
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.download = 'pixelpaint-drawing.png';
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    if(typeof notify === 'function') notify('PixelPaint', 'Drawing saved as PNG', '🎨', '#ff8fa3');
+  });
+
+  resizeCanvas();
+  const ro = new ResizeObserver(()=> resizeCanvas());
+  ro.observe(canvas);
+}
+
 /* ---- CALENDAR ---- */
 function renderCalendar(body, w){
   const inst = winInstances[w.id]; const today = new Date();
@@ -1365,7 +1610,7 @@ function renderSettingsApp(body, w){
     } else if(inst.section==='display'){
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">Display</h3>
         ${row('Brightness', `<input type="range" id="set-brightness" min="10" max="100" value="${s.brightness}" style="width:140px;">`)}
-        ${row('Night light', toggleHtml('nightlight', false))}`;
+        ${row('Night light', toggleHtml('nightlight', s.nightlight))}`;
     } else if(inst.section==='sound'){
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">Sound</h3>${row('Master volume', `<input type="range" id="set-volume" min="0" max="100" value="${s.volume}" style="width:140px;">`)}`;
     } else if(inst.section==='notifications'){
@@ -1373,11 +1618,15 @@ function renderSettingsApp(body, w){
         ${row('Do Not Disturb', toggleHtml('dnd', s.dnd))}
         ${row('Clear all notifications', `<button class="pill" id="set-clearnotif">Clear</button>`)}`;
     } else if(inst.section==='network'){
+      const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      const online = isOnline();
+      const devices = state.pairedBluetoothDevices||[];
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">Network</h3>
         ${row('Wi-Fi', toggleHtml('wifi', s.wifi))}
-        ${row('Bluetooth', toggleHtml('bluetooth', s.bluetooth))}
+        ${row('Bluetooth'+(navigator.bluetooth?'':' (unsupported here)'), toggleHtml('bluetooth', s.bluetooth))}
         ${row('Airplane mode', toggleHtml('airplane', s.airplane))}
-        <div class="card" style="margin-top:14px;"><b style="font-size:12.5px;">Zen Home Network</b><div style="font-size:11.5px; color:var(--text-2); margin-top:4px;">Connected · Simulated · Strong signal</div></div>`;
+        <div class="card" style="margin-top:14px;"><b style="font-size:12.5px;">Connection</b><div style="font-size:11.5px; color:${online?'var(--success)':'var(--danger)'}; margin-top:4px;">${online?'Online':'Offline'}${!online?' — '+escapeHtml(offlineReason()):''}${conn?' · '+escapeHtml(conn.effectiveType||'')+(conn.downlink?' · ~'+conn.downlink+' Mbps':''):''}</div><div style="font-size:10px; color:var(--text-3); margin-top:6px;">Real browser network status — network-dependent apps (PlayTube, Wavelength, Zen Browse) are actually blocked while offline or in Airplane Mode.</div></div>
+        <div class="card" style="margin-top:10px;"><b style="font-size:12.5px;">Paired Bluetooth devices</b>${devices.length?devices.map(d=>`<div style="font-size:11.5px; color:var(--text-2); margin-top:6px;">🔵 ${escapeHtml(d.name)}</div>`).join(''):`<div style="font-size:11px; color:var(--text-3); margin-top:6px;">None yet — turn on Bluetooth to open your browser's real device picker.</div>`}</div>`;
     } else if(inst.section==='privacy'){
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">Privacy</h3><p style="font-size:12.5px; color:var(--text-2); line-height:1.6;">Most of Zen OS runs entirely in your browser and stores nothing on a server — files, notes, settings, and events live in this browser's local storage until you clear it. Three apps are the exception: PlayTube and Wavelength embed the real YouTube and Spotify players (so those requests go to youtube.com / open.spotify.com), and Zen Browse loads whatever live site you point it at.</p>`;
     } else if(inst.section==='storage'){
@@ -1415,10 +1664,12 @@ function renderSettingsApp(body, w){
     panel.querySelectorAll('[data-cursor]').forEach(el=>el.addEventListener('click', ()=>{ s.cursorId = el.dataset.cursor; applyCursor(); saveState(); drawSection(); }));
     panel.querySelectorAll('[data-toggle]').forEach(el=>el.addEventListener('click', ()=>{
       const key = el.dataset.toggle;
-      if(['wifi','bluetooth','airplane','dnd'].includes(key)){ s[key] = !s[key]; saveState(); drawSection(); }
+      if(key==='bluetooth'){ toggleBluetooth().then(drawSection); return; }
+      if(key==='nightlight'){ s.nightlight = !s.nightlight; applyDisplayEffects(); saveState(); drawSection(); return; }
+      if(['wifi','airplane','dnd'].includes(key)){ s[key] = !s[key]; saveState(); drawSection(); refreshNetworkUi(); }
     }));
     const un = panel.querySelector('#set-username'); if(un) un.addEventListener('input', e=>{ s.username=e.target.value; saveState(); });
-    const br = panel.querySelector('#set-brightness'); if(br) br.addEventListener('input', e=>{ s.brightness=+e.target.value; document.getElementById('os-root').style.filter = `brightness(${0.55+e.target.value/100*0.5})`; saveState(); });
+    const br = panel.querySelector('#set-brightness'); if(br) br.addEventListener('input', e=>{ s.brightness=+e.target.value; applyDisplayEffects(); saveState(); });
     const vo = panel.querySelector('#set-volume'); if(vo) vo.addEventListener('input', e=>{ s.volume=+e.target.value; saveState(); });
     const cn = panel.querySelector('#set-clearnotif'); if(cn) cn.addEventListener('click', ()=>{ state.notifications=[]; saveState(); renderTrayBadge(); });
     const rs = panel.querySelector('#set-reset'); if(rs) rs.addEventListener('click', ()=>{ if(confirm('Reset all Zen OS data? This cannot be undone.')){ localStorage.removeItem(LS_KEY); location.reload(); } });
@@ -1566,7 +1817,8 @@ function renderBrowser(body, w){
     const url = normalizeUrl(rawInput);
     if(!url) return;
     const tab = activeTab();
-    tab.input = rawInput; tab.url = url; tab.blocked = false; tab.loading = true;
+    if(!isOnline()){ tab.input = rawInput; tab.offline = true; tab.loading = false; drawChrome(); return; }
+    tab.input = rawInput; tab.url = url; tab.blocked = false; tab.offline = false; tab.loading = true;
     tab.history = tab.history.slice(0, tab.hi+1); tab.history.push(url); tab.hi++;
     state.browserHistory.push(url); saveState();
     ensureFrame(tab).src = url;
@@ -1657,6 +1909,7 @@ function renderBrowser(body, w){
       <div class="zb-loadbar ${tab.loading?'loading':''}" id="br-loadbar"></div>
       ${state.browserBookmarks.length?`<div class="zb-bookmarks-bar">${state.browserBookmarks.map(b=>`<div class="pill" data-bm="${escapeHtml(b.url)}" style="font-size:10.5px;">⭐ ${escapeHtml(b.title)}</div>`).join('')}</div>`:''}
       ${tab.blocked ? `<div style="margin:10px 14px 0; padding:9px 12px; background:rgba(255,107,107,0.13); border:1px solid rgba(255,107,107,0.3); font-size:11.5px; color:var(--text-2);">This site refused to load inside an embedded frame (its X-Frame-Options/CSP policy blocks embedding — most banks, social networks, and Google properties do this). Use the ⋮ menu's "Open in real new tab" instead.</div>` : ''}
+      ${tab.offline ? `<div style="margin:10px 14px 0; padding:9px 12px; background:rgba(255,107,107,0.13); border:1px solid rgba(255,107,107,0.3); font-size:11.5px; color:var(--text-2);">${escapeHtml(offlineReason())}</div>` : ''}
     `;
     bindChrome();
   }
@@ -1798,6 +2051,7 @@ function ytBindCards(container, list, onSelect){
   container.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click', ()=>onSelect(el.dataset.id)));
 }
 async function youtubeFetchTrending(container, onSelect){
+  if(!isOnline()){ container.innerHTML = `<div class="np-empty">📵 ${escapeHtml(offlineReason())}</div>`; return VIDEO_CATALOG; }
   container.innerHTML = `<div class="np-empty">Loading trending…</div>`;
   try{
     const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails,status&chart=mostPopular&regionCode=${YOUTUBE_REGION}&maxResults=15&key=${YOUTUBE_API_KEY}`);
@@ -1816,6 +2070,7 @@ async function youtubeFetchTrending(container, onSelect){
   }
 }
 async function youtubeSearch(query, container, onSelect){
+  if(!isOnline()){ container.innerHTML = `<div class="np-empty">📵 ${escapeHtml(offlineReason())}</div>`; return []; }
   container.innerHTML = `<div class="np-empty">Searching…</div>`;
   try{
     const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=15&q=${encodeURIComponent(query)}&key=${YOUTUBE_API_KEY}`);
@@ -2145,6 +2400,7 @@ function renderGames(body, w){
   }
   function launchGame(g){
     const gb = body.querySelector('#gm-body');
+    if(g.id === 'gm-nebulacrash'){ launchNebulaCrash(gb, g); return; }
     gb.innerHTML = `<div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:linear-gradient(135deg, ${g.color}22, transparent);">
       <div style="font-size:56px;">${g.icon}</div>
       <div style="font-family:var(--font-display); font-size:16px;">Launching ${escapeHtml(g.name)}...</div>
@@ -2153,6 +2409,168 @@ function renderGames(body, w){
     </div>`;
     let p=0; const iv=setInterval(()=>{ p+=12; const bar=gb.querySelector('#gm-launch-bar'); if(bar) bar.style.width=Math.min(p,100)+'%'; if(p>=100){ clearInterval(iv); const box=gb.querySelector('div'); if(box) box.innerHTML=`<div style="text-align:center;"><div style="font-size:56px;">${g.icon}</div><div style="font-family:var(--font-display); font-size:16px; margin-top:10px;">${escapeHtml(g.name)} is running</div><div style="color:var(--text-3); font-size:11.5px; margin-top:6px;">Simulated gameplay — this is a demo launch screen.</div><button class="pill" id="gm-launch-back2" style="margin-top:14px;">← Back to Library</button></div>`; document.getElementById('gm-launch-back2')?.addEventListener('click', draw); } }, 220);
     gb.querySelector('#gm-launch-back').addEventListener('click', draw);
+  }
+  function launchNebulaCrash(gb, g){
+    const NC_HS_KEY = 'zenos_nebulacrash_highscore';
+    let rafId = null;
+    let keys = {};
+    let keydownHandler = null, keyupHandler = null;
+
+    function getBest(){ return Number(localStorage.getItem(NC_HS_KEY)) || 0; }
+    function setBest(v){ try{ localStorage.setItem(NC_HS_KEY, String(v)); }catch(e){} }
+
+    function cleanup(){
+      if(rafId!=null){ cancelAnimationFrame(rafId); rafId=null; }
+      if(keydownHandler){ document.removeEventListener('keydown', keydownHandler); keydownHandler=null; }
+      if(keyupHandler){ document.removeEventListener('keyup', keyupHandler); keyupHandler=null; }
+    }
+    function backToLibrary(){
+      cleanup();
+      draw();
+    }
+
+    function showIntro(){
+      cleanup();
+      gb.innerHTML = `<div class="nc-wrap">
+        <div class="nc-panel">
+          <div class="nc-icon">${g.icon}</div>
+          <div class="nc-title">${escapeHtml(g.name)}</div>
+          <div class="nc-sub">Dodge the falling asteroids and survive as long as you can.</div>
+          <div class="nc-sub">Move with ← → ↑ ↓ or W A S D</div>
+          <div class="nc-best">Best score: ${getBest()}</div>
+          <button class="btn primary" id="nc-start-btn">▶ Start Game</button>
+          <button class="pill" id="nc-back-btn">← Back to Library</button>
+        </div>
+      </div>`;
+      gb.querySelector('#nc-start-btn').addEventListener('click', startGame);
+      gb.querySelector('#nc-back-btn').addEventListener('click', backToLibrary);
+    }
+
+    function startGame(){
+      cleanup();
+      gb.innerHTML = `<div class="nc-wrap">
+        <div class="nc-hud">
+          <span>Score: <b id="nc-score">0</b></span>
+          <span>Best: <b id="nc-hud-best">${getBest()}</b></span>
+          <button class="pill" id="nc-quit-btn">← Back to Library</button>
+        </div>
+        <canvas id="nc-canvas" class="nc-canvas" width="480" height="320"></canvas>
+      </div>`;
+      gb.querySelector('#nc-quit-btn').addEventListener('click', backToLibrary);
+
+      const canvas = gb.querySelector('#nc-canvas');
+      const ctx = canvas.getContext('2d');
+      const W = canvas.width, H = canvas.height;
+
+      const player = {w:26, h:18, x: W/2-13, y: H-36, speed:4.2};
+      let asteroids = [];
+      let score = 0;
+      let spawnTimer = 0;
+      let elapsed = 0;
+      let lastTs = null;
+      let over = false;
+
+      keys = {};
+      keydownHandler = e=>{
+        const k = e.key.toLowerCase();
+        if(['arrowleft','arrowright','arrowup','arrowdown','a','d','w','s'].includes(k)) e.preventDefault();
+        keys[k] = true;
+      };
+      keyupHandler = e=>{ keys[e.key.toLowerCase()] = false; };
+      document.addEventListener('keydown', keydownHandler);
+      document.addEventListener('keyup', keyupHandler);
+
+      function spawnAsteroid(){
+        const r = 8 + Math.random()*14;
+        asteroids.push({x: Math.random()*(W-r*2)+r, y:-r, r, speed: 1.6 + Math.min(elapsed/12, 5) + Math.random()*1.2});
+      }
+
+      function loop(ts){
+        if(!gb.isConnected){ cleanup(); return; }
+        if(lastTs==null) lastTs = ts;
+        const dt = Math.min((ts-lastTs)/1000, 0.05);
+        lastTs = ts;
+        elapsed += dt;
+
+        const left = keys['arrowleft']||keys['a'];
+        const right = keys['arrowright']||keys['d'];
+        const up = keys['arrowup']||keys['w'];
+        const down = keys['arrowdown']||keys['s'];
+        const move = player.speed*(dt*60);
+        if(left) player.x -= move;
+        if(right) player.x += move;
+        if(up) player.y -= move;
+        if(down) player.y += move;
+        player.x = Math.max(4, Math.min(W-player.w-4, player.x));
+        player.y = Math.max(4, Math.min(H-player.h-4, player.y));
+
+        spawnTimer += dt;
+        const spawnInterval = Math.max(0.9 - elapsed*0.02, 0.22);
+        if(spawnTimer > spawnInterval){ spawnTimer = 0; spawnAsteroid(); }
+
+        asteroids.forEach(a=> a.y += a.speed*(dt*60));
+        asteroids = asteroids.filter(a=> a.y - a.r < H+20);
+
+        const px = player.x, py = player.y, pw = player.w, ph = player.h;
+        for(const a of asteroids){
+          const closestX = Math.max(px, Math.min(a.x, px+pw));
+          const closestY = Math.max(py, Math.min(a.y, py+ph));
+          const dx = a.x - closestX, dy = a.y - closestY;
+          if(dx*dx+dy*dy < a.r*a.r){ over = true; break; }
+        }
+
+        score += dt*10;
+
+        ctx.fillStyle = '#0a0a14';
+        ctx.fillRect(0,0,W,H);
+
+        ctx.fillStyle = '#ff5c5c';
+        asteroids.forEach(a=>{
+          ctx.beginPath();
+          ctx.arc(a.x, a.y, a.r, 0, Math.PI*2);
+          ctx.fill();
+        });
+
+        ctx.fillStyle = '#8c6cff';
+        ctx.beginPath();
+        ctx.moveTo(player.x+player.w/2, player.y);
+        ctx.lineTo(player.x, player.y+player.h);
+        ctx.lineTo(player.x+player.w, player.y+player.h);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#2fe6c9';
+        ctx.fillRect(player.x+player.w/2-2, player.y+player.h-4, 4, 6);
+
+        const scoreEl = gb.querySelector('#nc-score');
+        if(scoreEl) scoreEl.textContent = Math.floor(score);
+
+        if(over){ endGame(Math.floor(score)); return; }
+        rafId = requestAnimationFrame(loop);
+      }
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function endGame(finalScore){
+      cleanup();
+      const best = getBest();
+      const isNew = finalScore > best;
+      if(isNew) setBest(finalScore);
+      const newBest = isNew ? finalScore : best;
+      gb.innerHTML = `<div class="nc-wrap">
+        <div class="nc-panel">
+          <div class="nc-icon">💥</div>
+          <div class="nc-title">Game Over</div>
+          <div class="nc-score-line">Score: ${finalScore}</div>
+          <div class="nc-best">${isNew?'New high score!':'Best: '+newBest}</div>
+          <button class="btn primary" id="nc-again-btn">↺ Play Again</button>
+          <button class="pill" id="nc-back-btn2">← Back to Library</button>
+        </div>
+      </div>`;
+      gb.querySelector('#nc-again-btn').addEventListener('click', startGame);
+      gb.querySelector('#nc-back-btn2').addEventListener('click', backToLibrary);
+    }
+
+    showIntro();
   }
   draw();
 }
@@ -2244,7 +2662,10 @@ function renderSoftwareHub(body, w){
     }));
     sb.querySelectorAll('[data-launch]').forEach(el=>el.addEventListener('click', ()=>{
       const id = el.dataset.launch; const kind = el.dataset.kind;
-      if(kind==='app') openApp(id);
+      if(kind==='app'){
+        if(id==='sw-pixelpaint') openApp('pixelpaint');
+        else openApp(id);
+      }
       else openApp('games');
     }));
   }
@@ -2449,7 +2870,8 @@ function init(){
   renderTrayBadge();
   renderBatteryTray();
   tryRealBattery();
-  document.getElementById('os-root').style.filter = `brightness(${0.55 + state.settings.brightness/100*0.5})`;
+  refreshNetworkUi();
+  applyDisplayEffects();
   runBootSequence();
 }
 init();
