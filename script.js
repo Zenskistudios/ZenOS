@@ -2684,7 +2684,7 @@ const BOOT_LINES = [
   '[ OK ] Loading desktop environment',
   '[ OK ] Kernel online'
 ];
-const AVATAR_CHOICES = ['🧑','👩','🧑\u200d💻','🧙','🦊','🐧','👾','🤖'];
+const AVATAR_CHOICES = ['🧑','👩','💻','🧙','🦊','🐧','👾','🤖'];
 
 function runBootSequence(){
   const boot = document.getElementById('boot-screen');
