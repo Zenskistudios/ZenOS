@@ -1598,12 +1598,16 @@ function ytMapVideoResource(v){
     views:v.statistics?v.statistics.viewCount:null, published:v.snippet.publishedAt, duration:v.contentDetails?v.contentDetails.duration:null,
   };
 }
+// Some videos have embedding disabled on third-party sites by the rights
+// holder (status.embeddable === false) — YouTube's own player shows a
+// "Video unavailable" screen for these inside our iframe. Requesting the
+// `status` part lets us filter those out before they ever reach the UI.
 async function youtubeVideosListByIds(ids){
   if(!ids.length) return [];
-  const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${ids.join(',')}&key=${YOUTUBE_API_KEY}`);
+  const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails,status&id=${ids.join(',')}&key=${YOUTUBE_API_KEY}`);
   const data = await res.json();
   if(data.error) throw new Error(data.error.message);
-  return (data.items||[]).map(ytMapVideoResource);
+  return (data.items||[]).filter(v=>!v.status || v.status.embeddable !== false).map(ytMapVideoResource);
 }
 function ytVideoCard(v){
   const thumb = v.thumb || `https://img.youtube.com/vi/${v.id}/mqdefault.jpg`;
@@ -1624,10 +1628,10 @@ function ytBindCards(container, list, onSelect){
 async function youtubeFetchTrending(container, onSelect){
   container.innerHTML = `<div class="np-empty">Loading trending…</div>`;
   try{
-    const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&chart=mostPopular&regionCode=${YOUTUBE_REGION}&maxResults=15&key=${YOUTUBE_API_KEY}`);
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails,status&chart=mostPopular&regionCode=${YOUTUBE_REGION}&maxResults=15&key=${YOUTUBE_API_KEY}`);
     const data = await res.json();
     if(data.error) throw new Error(data.error.message);
-    const list = (data.items||[]).map(ytMapVideoResource);
+    const list = (data.items||[]).filter(v=>!v.status || v.status.embeddable !== false).map(ytMapVideoResource);
     if(!list.length){ container.innerHTML = `<div class="np-empty">No trending videos found</div>`; return VIDEO_CATALOG; }
     container.innerHTML = `<div class="grid-cards">${list.map(ytVideoCard).join('')}</div>`;
     ytBindCards(container, list, onSelect);
