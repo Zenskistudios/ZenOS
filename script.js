@@ -1559,37 +1559,174 @@ function renderBrowser(body, w){
 }
 
 /* ---- YOUTUBE (PlayTube) — real YouTube thumbnails + real embedded player ---- */
+/* ---------------------- YOUTUBE DATA API (real search, real stats) ---------------------- */
+// Public data only (search, video stats, trending) — no user login needed,
+// just a restricted API key. Quota: search.list costs 100 units, videos.list
+// costs 1 unit, out of a 10,000/day free quota — so roughly ~99 real
+// searches/day before Google throttles it back until the next day.
+const YOUTUBE_API_KEY = 'AIzaSyBPQ_zBqOvxiwXYc0Ugrd9PTNMBY0Gpdgc';
+const YOUTUBE_REGION = 'NG';
+
+function ytFormatViews(n){
+  n = Number(n)||0;
+  if(n>=1e9) return (n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
+  if(n>=1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'')+'M';
+  if(n>=1e3) return (n/1e3).toFixed(1).replace(/\.0$/,'')+'K';
+  return String(n);
+}
+function ytFormatRelativeDate(iso){
+  const diffSec = Math.floor((Date.now() - new Date(iso).getTime())/1000);
+  const mins=Math.floor(diffSec/60), hrs=Math.floor(mins/60), days=Math.floor(hrs/24), months=Math.floor(days/30), years=Math.floor(days/365);
+  if(years>=1) return years+' year'+(years>1?'s':'')+' ago';
+  if(months>=1) return months+' month'+(months>1?'s':'')+' ago';
+  if(days>=1) return days+' day'+(days>1?'s':'')+' ago';
+  if(hrs>=1) return hrs+' hour'+(hrs>1?'s':'')+' ago';
+  if(mins>=1) return mins+' minute'+(mins>1?'s':'')+' ago';
+  return 'just now';
+}
+function ytFormatDuration(iso){
+  const m = (iso||'').match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if(!m) return '';
+  const h=+m[1]||0, mi=+m[2]||0, s=+m[3]||0;
+  const pad=n=>String(n).padStart(2,'0');
+  return h>0 ? `${h}:${pad(mi)}:${pad(s)}` : `${mi}:${pad(s)}`;
+}
+function ytMapVideoResource(v){
+  return {
+    id:v.id, title:v.snippet.title, channel:v.snippet.channelTitle,
+    thumb:(v.snippet.thumbnails && (v.snippet.thumbnails.medium||v.snippet.thumbnails.default)?.url) || `https://img.youtube.com/vi/${v.id}/mqdefault.jpg`,
+    views:v.statistics?v.statistics.viewCount:null, published:v.snippet.publishedAt, duration:v.contentDetails?v.contentDetails.duration:null,
+  };
+}
+async function youtubeVideosListByIds(ids){
+  if(!ids.length) return [];
+  const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${ids.join(',')}&key=${YOUTUBE_API_KEY}`);
+  const data = await res.json();
+  if(data.error) throw new Error(data.error.message);
+  return (data.items||[]).map(ytMapVideoResource);
+}
+function ytVideoCard(v){
+  const thumb = v.thumb || `https://img.youtube.com/vi/${v.id}/mqdefault.jpg`;
+  const meta = [v.channel, v.views!=null?ytFormatViews(v.views)+' views':null, v.published?ytFormatRelativeDate(v.published):(v.cat||null)].filter(Boolean).join(' · ');
+  return `<div class="card yt-card" data-id="${v.id}" style="cursor:pointer; padding:0; overflow:hidden;">
+    <div style="width:100%; aspect-ratio:16/9; position:relative; background:#000;">
+      <img src="${thumb}" alt="${escapeHtml(v.title)}" style="width:100%; height:100%; object-fit:cover; display:block;">
+      ${v.duration?`<span style="position:absolute; bottom:4px; right:4px; background:rgba(0,0,0,.8); color:#fff; font-size:9px; padding:2px 4px;">${ytFormatDuration(v.duration)}</span>`:''}
+      <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.15); font-size:26px;">▶️</div>
+    </div>
+    <div style="padding:10px;"><div style="font-size:12.5px; font-weight:600; line-height:1.3;">${escapeHtml(v.title)}</div>
+    <div style="font-size:11px; color:var(--text-3); margin-top:4px;">${escapeHtml(meta)}</div></div>
+  </div>`;
+}
+function ytBindCards(container, list, onSelect){
+  container.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click', ()=>onSelect(el.dataset.id)));
+}
+async function youtubeFetchTrending(container, onSelect){
+  container.innerHTML = `<div class="np-empty">Loading trending…</div>`;
+  try{
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&chart=mostPopular&regionCode=${YOUTUBE_REGION}&maxResults=15&key=${YOUTUBE_API_KEY}`);
+    const data = await res.json();
+    if(data.error) throw new Error(data.error.message);
+    const list = (data.items||[]).map(ytMapVideoResource);
+    if(!list.length){ container.innerHTML = `<div class="np-empty">No trending videos found</div>`; return VIDEO_CATALOG; }
+    container.innerHTML = `<div class="grid-cards">${list.map(ytVideoCard).join('')}</div>`;
+    ytBindCards(container, list, onSelect);
+    return list;
+  }catch(e){
+    container.innerHTML = `<div class="grid-cards">${VIDEO_CATALOG.map(ytVideoCard).join('')}</div>
+      <div class="np-empty" style="margin-top:10px;">Couldn't load live trending (showing the starter list instead) — ${escapeHtml(e.message||'')}</div>`;
+    ytBindCards(container, VIDEO_CATALOG, onSelect);
+    return VIDEO_CATALOG;
+  }
+}
+async function youtubeSearch(query, container, onSelect){
+  container.innerHTML = `<div class="np-empty">Searching…</div>`;
+  try{
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=15&q=${encodeURIComponent(query)}&key=${YOUTUBE_API_KEY}`);
+    const data = await res.json();
+    if(data.error) throw new Error(data.error.message);
+    const ids = (data.items||[]).map(i=>i.id.videoId).filter(Boolean);
+    if(!ids.length){ container.innerHTML = `<div class="np-empty">No results for "${escapeHtml(query)}"</div>`; return []; }
+    const list = await youtubeVideosListByIds(ids);
+    container.innerHTML = `<div class="grid-cards">${list.map(ytVideoCard).join('')}</div>`;
+    ytBindCards(container, list, onSelect);
+    return list;
+  }catch(e){
+    container.innerHTML = `<div class="np-empty">Search failed — ${escapeHtml(e.message||'try again')}</div>`;
+    return [];
+  }
+}
+
 function renderYoutube(body, w){
   const inst = winInstances[w.id];
-  inst.view = inst.view || {screen:'home'};
-  inst.videos = inst.videos || [];
-  inst.query = inst.query || '';
-  inst.loading = inst.loading || false;
-  inst.error = inst.error || null;
-  const fallback = VIDEO_CATALOG.map(v=>({id:v.id,title:v.title,channel:v.channel,publishedAt:'',description:'',thumbnail:`https://img.youtube.com/vi/${v.id}/mqdefault.jpg`}));
-  async function loadVideos(query){
-    // No backend exists for /api/youtube in this frontend-only build, so
-    // there's nothing to actually fetch from — use the built-in catalog,
-    // which already has real video IDs and real youtube.com thumbnails.
-    inst.loading = true; draw();
-    inst.videos = fallback;
-    inst.query = query;
-    inst.error = null;
-    inst.loading = false;
-    draw();
-  }
+  inst.view = inst.view || {screen:'home', videoId:null};
+  inst.tab = inst.tab || 'home';
+  inst.lastList = inst.lastList || VIDEO_CATALOG;
+
   function draw(){
-    if(inst.view.screen==='watch'){
-      const v=inst.view.video;
-      body.innerHTML=`<div class="app yt-app"><div class="app-toolbar"><button class="pill" id="yt-back">← Back</button><span style="font-family:var(--font-display);font-size:10px;">PlayTube</span></div><div class="app-body"><div style="width:100%;aspect-ratio:16/9;background:#000;margin-bottom:14px;"><iframe width="100%" height="100%" src="https://www.youtube.com/embed/${encodeURIComponent(v.id)}?autoplay=1&rel=0" title="${escapeHtml(v.title)}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display:block;"></iframe></div><h3 style="font-family:var(--font-display);font-size:13px;line-height:1.5;">${escapeHtml(v.title)}</h3><div style="color:var(--text-2);font-size:11px;margin-top:7px;">${escapeHtml(v.channel)}${v.publishedAt?' · '+new Date(v.publishedAt).toLocaleDateString():''}</div><p style="color:var(--text-2);font-size:11px;line-height:1.6;margin-top:14px;white-space:pre-wrap;">${escapeHtml(v.description||'')}</p></div></div>`;
-      body.querySelector('#yt-back').addEventListener('click',()=>{inst.view={screen:'home'};draw();}); return;
+    if(inst.view.screen==='home'){
+      body.innerHTML = `<div class="app">
+        <div class="app-toolbar">
+          <button class="pill" id="yt-trending-btn" style="background:${inst.tab==='home'?'var(--panel-strong)':'var(--panel)'};">🔥 Trending</button>
+          <input class="search" placeholder="Search PlayTube" id="yt-search" value="${inst.tab==='search'?escapeHtml(inst.lastQuery||''):''}">
+        </div>
+        <div class="app-body" id="yt-list"></div>
+      </div>`;
+      const list = body.querySelector('#yt-list');
+      const input = body.querySelector('#yt-search');
+      function loadHome(){ youtubeFetchTrending(list, openWatch).then(l=>inst.lastList=l); }
+      body.querySelector('#yt-trending-btn').addEventListener('click', ()=>{ inst.tab='home'; inst.lastQuery=''; input.value=''; loadHome(); });
+      let deb;
+      input.addEventListener('input', e=>{
+        clearTimeout(deb);
+        const q = e.target.value.trim();
+        inst.lastQuery = q;
+        if(!q){ inst.tab='home'; loadHome(); return; }
+        inst.tab='search';
+        deb = setTimeout(()=>{ youtubeSearch(q, list, openWatch).then(l=>inst.lastList=l); }, 400);
+      });
+      if(inst.tab==='search' && inst.lastQuery) youtubeSearch(inst.lastQuery, list, openWatch).then(l=>inst.lastList=l);
+      else loadHome();
+    } else {
+      drawWatch();
     }
-    const videos=inst.videos.length?inst.videos:fallback;
-    body.innerHTML=`<div class="app yt-app"><div class="app-toolbar" style="gap:8px;"><div style="font-family:var(--font-display);font-size:11px;white-space:nowrap;">▶ PlayTube</div><input class="search" id="yt-search" value="${escapeHtml(inst.query)}" placeholder="Search videos"><button class="btn primary" id="yt-search-btn">Search</button></div><div class="app-body"><div style="display:flex;gap:6px;margin-bottom:14px;"><button class="pill yt-nav active">Home</button><button class="pill yt-nav">Explore</button><button class="pill yt-nav">Trending</button><button class="pill yt-nav">History</button></div>${inst.loading?`<div class="grid-cards">${Array.from({length:6},()=>'<div class="card" style="height:180px;opacity:.5;"></div>').join('')}</div>`:inst.error?`<div class="empty-state"><div class="ic">⚠️</div>${escapeHtml(inst.error)}<button class="pill" id="yt-retry">Retry</button></div>`:`<div class="grid-cards">${videos.map(videoCard).join('')}</div>`}</div></div>`;
-    body.querySelector('#yt-search-btn').addEventListener('click',()=>{const q=body.querySelector('#yt-search').value.trim();if(q)loadVideos(q);}); body.querySelector('#yt-search').addEventListener('keydown',e=>{if(e.key==='Enter')body.querySelector('#yt-search-btn').click();}); body.querySelector('#yt-retry')?.addEventListener('click',()=>loadVideos(inst.query||'JavaScript tutorial')); body.querySelectorAll('.yt-card').forEach(el=>el.addEventListener('click',()=>{inst.view={screen:'watch',video:videos.find(v=>v.id===el.dataset.id)};draw();}));
   }
-  function videoCard(v){ return `<div class="card yt-card" data-id="${escapeHtml(v.id)}" style="cursor:pointer;padding:0;overflow:hidden;"><div style="width:100%;aspect-ratio:16/9;background:#000;"><img src="${escapeHtml(v.thumbnail)}" alt="${escapeHtml(v.title)}" style="width:100%;height:100%;object-fit:cover;display:block;"></div><div style="padding:10px;"><div style="font-size:12px;font-weight:600;line-height:1.35;">${escapeHtml(v.title)}</div><div style="font-size:10px;color:var(--text-3);margin-top:5px;">${escapeHtml(v.channel)}${v.publishedAt?' · '+new Date(v.publishedAt).toLocaleDateString():''}</div></div></div>`; }
-  draw(); if(!inst.videos.length) loadVideos('JavaScript tutorial');
+
+  function openWatch(id){ inst.view = {screen:'watch', videoId:id}; draw(); }
+
+  function renderWatchMeta(v){
+    const stats = [v.views!=null?ytFormatViews(v.views)+' views':null, v.published?ytFormatRelativeDate(v.published):null].filter(Boolean).join(' · ');
+    return `<h3 style="font-family:var(--font-display);">${escapeHtml(v.title)}</h3>
+      <div style="color:var(--text-2); font-size:12px; margin-top:4px;">${escapeHtml(stats || v.cat || 'Real YouTube video')}</div>
+      <div style="display:flex; align-items:center; gap:10px; margin:14px 0;">
+        <div style="width:34px; height:34px; background:#ff5c5c33; display:flex; align-items:center; justify-content:center;">📺</div>
+        <div style="flex:1;"><b style="font-size:12.5px;">${escapeHtml(v.channel)}</b></div>
+        <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener" class="btn primary" style="text-decoration:none;">Open on YouTube ↗</a>
+      </div>`;
+  }
+
+  async function drawWatch(){
+    let v = inst.lastList.find(x=>x.id===inst.view.videoId) || VIDEO_CATALOG.find(x=>x.id===inst.view.videoId);
+    body.innerHTML = `<div class="app">
+      <div class="app-toolbar"><button class="pill" id="yt-back">← Back</button></div>
+      <div class="app-body">
+        <div style="width:100%; aspect-ratio:16/9; overflow:hidden; margin-bottom:14px; background:#000;">
+          <iframe width="100%" height="100%" src="https://www.youtube.com/embed/${inst.view.videoId}?autoplay=1&rel=0" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display:block;"></iframe>
+        </div>
+        <div id="yt-watch-meta">${v?renderWatchMeta(v):'<div class="np-empty">Loading details…</div>'}</div>
+      </div></div>`;
+    body.querySelector('#yt-back').addEventListener('click', ()=>{ inst.view={screen:'home', videoId:null}; draw(); });
+    if(!v){
+      try{
+        const list = await youtubeVideosListByIds([inst.view.videoId]);
+        v = list[0];
+        const metaEl = body.querySelector('#yt-watch-meta');
+        if(v && metaEl) metaEl.innerHTML = renderWatchMeta(v);
+      }catch(e){}
+    }
+  }
+
+  draw();
 }
 
 /* ---- SPOTIFY (Wavelength) — real Spotify embed player, real audio ---- */
