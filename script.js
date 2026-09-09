@@ -1639,7 +1639,6 @@ function ytVideoCard(v){
     <div style="width:100%; aspect-ratio:16/9; position:relative; background:#000;">
       <img src="${thumb}" alt="${escapeHtml(v.title)}" style="width:100%; height:100%; object-fit:cover; display:block;">
       ${v.duration?`<span style="position:absolute; bottom:4px; right:4px; background:rgba(0,0,0,.8); color:#fff; font-size:9px; padding:2px 4px;">${ytFormatDuration(v.duration)}</span>`:''}
-      <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.15); font-size:26px;">▶️</div>
     </div>
     <div style="padding:10px;"><div style="font-size:12.5px; font-weight:600; line-height:1.3;">${escapeHtml(v.title)}</div>
     <div style="font-size:11px; color:var(--text-3); margin-top:4px;">${escapeHtml(meta)}</div></div>
