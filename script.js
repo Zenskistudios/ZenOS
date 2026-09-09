@@ -903,7 +903,7 @@ function handlePower(action){
   }
   const overlay = document.createElement('div');
   overlay.style.cssText='position:fixed;inset:0;background:#000;z-index:9998;display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--font-display);font-size:11px;text-align:center;line-height:2.2;';
-  overlay.innerHTML='✦<br>Zen OS — simulated shutdown<br><span style="font-size:9px;color:#888;">Refresh the page to power back on</span>';
+  overlay.innerHTML='🌸<br>Zen OS — simulated shutdown<br><span style="font-size:9px;color:#888;">Refresh the page to power back on</span>';
   document.body.appendChild(overlay);
 }
 
@@ -942,7 +942,7 @@ document.getElementById('os-root').addEventListener('contextmenu', e=>{
     <div class="ctx-item" data-a="wallpaper">🖼️ Change Wallpaper</div>
     <div class="ctx-item" data-a="settings">⚙️ Display Settings</div>
     <div class="ctx-sep"></div>
-    <div class="ctx-item" data-a="about">✦ About Zen OS</div>
+    <div class="ctx-item" data-a="about">🌸 About Zen OS</div>
   `;
   ctxMenu.style.left = e.clientX+'px'; ctxMenu.style.top = e.clientY+'px';
   ctxMenu.classList.add('open');
@@ -1653,7 +1653,7 @@ function renderSettingsApp(body, w){
         <div class="card">${ZenKernel.process.list().map(process=>`<div style="padding:8px 0;border-bottom:1px solid var(--panel-border);"><b>${escapeHtml(process.name)} · PID ${process.pid}</b><div style="color:var(--text-2);font-size:10px;margin-top:4px;">${process.permissions.join(', ')}</div></div>`).join('')}</div>`;
     } else if(inst.section==='about'){
       html = `<div style="text-align:center; padding:20px;">
-        <div style="font-size:44px; margin-bottom:10px;">✦</div>
+        <div style="font-size:44px; margin-bottom:10px;">🌸</div>
         <h2 style="font-family:var(--font-display);">Zen OS</h2>
         <p style="color:var(--text-2); font-size:12.5px; margin-top:6px;">Version 1.0 · Frontend Edition</p>
         <p style="color:var(--text-3); font-size:11.5px; margin-top:14px; max-width:320px; margin-left:auto; margin-right:auto; line-height:1.6;">Zen OS is a browser-based operating-system simulator built with HTML, CSS and JavaScript. It implements a custom kernel-like architecture with process management, CPU scheduling simulation, virtual memory management, a virtual filesystem, permissions, IPC, system calls, package management and system services. No backend or account server is used.</p>
@@ -2772,9 +2772,9 @@ function renderLoginScreen(){
 function completeLogin(isNewAccount){
   document.getElementById('login-screen').style.display='none';
   if(isNewAccount){
-    notify('Account created', 'Welcome to Zen OS, '+state.settings.username+'!', state.avatarEmoji||'✦', '#7c6cff');
+    notify('Account created', 'Welcome to Zen OS, '+state.settings.username+'!', state.avatarEmoji||'🌸', '#7c6cff');
   } else {
-    notify('Welcome back', state.settings.username, state.avatarEmoji||'✦', '#7c6cff');
+    notify('Welcome back', state.settings.username, state.avatarEmoji||'🌸', '#7c6cff');
   }
 }
 
