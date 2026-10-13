@@ -191,9 +191,9 @@ const APP_REGISTRY = {
   softwarehub:{name:'Software Hub', icon:'🛍️', svgKey:'apps', color:'#7c6cff', system:true, pinned:true},
   youtube:    {name:'PlayTube',     icon:'▶️', svgKey:'youtube', color:'#ff5c5c', system:true, pinned:false},
   spotify:    {name:'Wavelength',   icon:'🎧', svgKey:'spotify', color:'#1ed760', system:true, pinned:false},
-  games:      {name:'Games',        icon:'🎮', color:'#7c6cff', system:true, pinned:false},
-  camera:     {name:'Camera',       icon:'📷', color:'#ff6b9d', system:true, pinned:true},
-  share:      {name:'Share',        icon:'📤', color:'#2fe6c9', system:true, pinned:false},
+  games:      {name:'Games',        icon:'🎮', svgKey:'games', color:'#7c6cff', system:true, pinned:false},
+  camera:     {name:'Camera',       icon:'📷', svgKey:'camera', color:'#ff6b9d', system:true, pinned:true},
+  share:      {name:'Share',        icon:'📤', svgKey:'share', color:'#2fe6c9', system:true, pinned:false},
   pixelpaint: {name:'PixelPaint',   icon:'🎨', color:'#ff8fa3', system:false, pinned:false},
   codeforge:  {name:'CodeForge',    icon:'⚡', color:'#5cc8ff', system:false, pinned:false},
 };
@@ -469,7 +469,7 @@ const SVG_ASSETS = {
   calculator:'calc.svg', calc:'calc.svg', calendar:'calendar.svg', terminal:'terminal.svg', settings:'setting.svg',
   taskmanager:'appmanager.svg', appmanager:'appmanager.svg', softwarehub:'apps.svg', apps:'apps.svg', youtube:'videoplayer.svg', spotify:'Wavelength.svg',
   games:'booth.svg', about:'about.svg', battery:'battery.svg', bluetooth:'Bluetooth.svg', airplane:'airplane.svg',
-  brightness:'brightness.svg', notification:'notification.svg', wifi:'wifi.svg', storage:'storage.svg', privacy:'privacy.svg'
+  brightness:'brightness.svg', notification:'notification.svg', wifi:'wifi.svg', storage:'storage.svg', privacy:'privacy.svg', camera:'camera.svg', share:'share.svg'
 };
 function iconHtml(key, fallback, imgUrl){
   if(imgUrl) return `<span class="icon-svg asset-icon"><img src="${imgUrl}" alt="" draggable="false" onerror="this.parentNode.replaceWith(document.createTextNode('${(fallback||'📦').replace(/'/g,"\\'")}'))"></span>`;
@@ -1549,7 +1549,7 @@ function handlePower(action){
 /* ---------------------- DESKTOP ICONS + CONTEXT MENU ---------------------- */
 function renderDesktopIcons(){
   const box = document.getElementById('desktop-icons');
-  const icons = ['filemanager','browser','texteditor','calculator','codeforge','softwarehub','games','camera'];
+  const icons = ['filemanager','browser','texteditor','calculator','codeforge','softwarehub','games','camera','share'];
   box.innerHTML = icons.map(id=>{
     const m = APP_REGISTRY[id];
     return `<div class="dicon" data-app="${id}"><div class="glyph" style="background:${m.color}33; color:${m.color}">${iconHtml(m.svgKey, m.icon)}</div><div class="lbl">${m.name}</div></div>`;
