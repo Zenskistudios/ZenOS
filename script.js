@@ -9,7 +9,174 @@
        limit, not a bug here; those sites open in a new tab instead)
 ===================================================================== */
 
-const LS_KEY = 'zenos_state_v1';
+let LS_KEY = 'zenos_state_v1';
+// Multi-user: a small registry of accounts lives in its own key; each account
+// gets a completely separate state blob (and therefore its own filesystem,
+// notes, installed apps, settings, etc.) under zenos_state_v1__<id>.
+const USERS_KEY = 'zenos_users_v1';
+const ACTIVE_USER_KEY = 'zenos_active_user';
+const STORAGE_SCHEMA_KEY = 'zenos_schema_v1';
+const STORAGE_SCHEMA_VERSION = 1;
+const STATE_SNAPSHOT_KEY_PREFIX = 'zenos_snapshot_v1__';
+const SUPABASE_SETTINGS = window.ZENOS_SUPABASE_CONFIG || {};
+const supabaseClient = window.supabase && typeof window.supabase.createClient === 'function' && SUPABASE_SETTINGS.url && SUPABASE_SETTINGS.anonKey
+  ? window.supabase.createClient(SUPABASE_SETTINGS.url, SUPABASE_SETTINGS.anonKey)
+  : null;
+let cloudUser = null;
+let cloudStateReady = false;
+let cloudSyncTimer = null;
+let lastCloudSyncWarning = 0;
+let lastPersistedState = '';
+function userStateKey(id){ return 'zenos_state_v1__' + id; }
+function snapshotKeyForUser(id){ return STATE_SNAPSHOT_KEY_PREFIX + (id || 'guest'); }
+function safeJsonParse(raw, fallback){
+  try{ return raw === null || raw === undefined ? fallback : JSON.parse(raw); }
+  catch(e){ return fallback; }
+}
+function ensureArray(value, fallback){ return Array.isArray(value) ? value : (fallback || []); }
+function loadUsers(){
+  const users = safeJsonParse(localStorage.getItem(USERS_KEY), []);
+  if(!Array.isArray(users)) return [];
+  return users.filter(u => u && typeof u.id === 'string' && typeof u.username === 'string');
+}
+function saveUsers(users){ try{ localStorage.setItem(USERS_KEY, JSON.stringify(users)); }catch(e){} }
+let activeUserId = null;
+function currentUser(){
+  if(cloudUser){
+    const metadata = cloudUser.user_metadata || {};
+    return {
+      id: cloudUser.id,
+      username: metadata.username || cloudUser.email?.split('@')[0] || 'User',
+      avatar: metadata.avatar || '🧑',
+      role: 'standard',
+      email: cloudUser.email
+    };
+  }
+  return loadUsers().find(u=>u.id===activeUserId) || null;
+}
+function ensureStorageSchema(){
+  const stored = safeJsonParse(localStorage.getItem(STORAGE_SCHEMA_KEY), null);
+  if(stored === null){
+    localStorage.setItem(STORAGE_SCHEMA_KEY, JSON.stringify(STORAGE_SCHEMA_VERSION));
+    return;
+  }
+  if(Number(stored) < STORAGE_SCHEMA_VERSION){
+    localStorage.setItem(STORAGE_SCHEMA_KEY, JSON.stringify(STORAGE_SCHEMA_VERSION));
+  }
+}
+function validateUserState(rawState){
+  const base = defaultState();
+  if(!rawState || typeof rawState !== 'object') return base;
+  const state = rawState;
+  return {
+    ...base,
+    ...state,
+    onboarded: !!state.onboarded,
+    avatarEmoji: typeof state.avatarEmoji === 'string' ? state.avatarEmoji : base.avatarEmoji,
+    battery: { ...base.battery, ...(state.battery || {}) },
+    settings: { ...base.settings, ...(state.settings || {}) },
+    installedApps: ensureArray(state.installedApps),
+    installedGames: ensureArray(state.installedGames),
+    notifications: ensureArray(state.notifications),
+    recents: ensureArray(state.recents),
+    notes: ensureArray(state.notes),
+    events: ensureArray(state.events),
+    fs: state.fs || base.fs,
+    calcHistory: ensureArray(state.calcHistory),
+    browserHistory: ensureArray(state.browserHistory),
+    browserBookmarks: ensureArray(state.browserBookmarks, base.browserBookmarks),
+    customTracks: ensureArray(state.customTracks),
+    likedTracks: ensureArray(state.likedTracks),
+    codeProjects: ensureArray(state.codeProjects),
+    pairedBluetoothDevices: ensureArray(state.pairedBluetoothDevices),
+  };
+}
+function safeStateWrite(key, value){
+  try{ localStorage.setItem(key, JSON.stringify(value)); }
+  catch(e){}
+}
+function saveStateSnapshot(label = 'latest'){
+  if(!activeUserId && !state) return;
+  const userId = activeUserId || 'guest';
+  const snapshot = {
+    version: STORAGE_SCHEMA_VERSION,
+    label,
+    savedAt: new Date().toISOString(),
+    state: validateUserState(state)
+  };
+  safeStateWrite(snapshotKeyForUser(userId), snapshot);
+}
+function loadStateSnapshot(userId){
+  const snap = safeJsonParse(localStorage.getItem(snapshotKeyForUser(userId)), null);
+  if(!snap || !snap.state) return null;
+  return validateUserState(snap.state);
+}
+function exportCurrentUserProfile(){
+  const payload = {
+    schemaVersion: STORAGE_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    userId: activeUserId,
+    user: currentUser(),
+    state: validateUserState(state)
+  };
+  return JSON.stringify(payload, null, 2);
+}
+function importUserProfileFromJson(rawText){
+  try{
+    const parsed = JSON.parse(rawText);
+    if(!parsed || typeof parsed !== 'object') return false;
+    const nextState = validateUserState(parsed.state || {});
+    state = nextState;
+    if(!cloudUser && parsed.user && parsed.user.id){
+      const users = loadUsers();
+      const existing = users.findIndex(u=>u.id===parsed.user.id);
+      if(existing >= 0) users[existing] = { ...users[existing], ...parsed.user }; else users.push(parsed.user);
+      saveUsers(users);
+      activeUserId = parsed.user.id;
+      LS_KEY = userStateKey(parsed.user.id);
+    }
+    saveState();
+    return true;
+  }catch(e){ return false; }
+}
+function downloadCurrentUserProfile(){
+  const data = exportCurrentUserProfile();
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `zenos-profile-${activeUserId || 'guest'}.json`; a.click();
+  URL.revokeObjectURL(url);
+}
+function isAdmin(){ const u = currentUser(); return !u || u.role === 'admin'; }
+// Real PBKDF2-style hashing of account passwords via Web Crypto (SHA-256 with
+// a per-account random salt). Passwords are never stored in the clear.
+async function hashPassword(password, saltHex){
+  const enc = new TextEncoder();
+  const salt = saltHex ? Uint8Array.from(saltHex.match(/../g).map(h=>parseInt(h,16))) : crypto.getRandomValues(new Uint8Array(16));
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name:'PBKDF2', salt, iterations:120000, hash:'SHA-256' }, keyMaterial, 256);
+  const hashHex = Array.from(new Uint8Array(bits)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  const outSalt = Array.from(salt).map(b=>b.toString(16).padStart(2,'0')).join('');
+  return { hash: hashHex, salt: outSalt };
+}
+async function verifyPassword(password, account){
+  if(!account.passHash) return true; // no password set
+  const { hash } = await hashPassword(password, account.salt);
+  return hash === account.passHash;
+}
+// Permissions granted to processes spawned for the signed-in user. Standard
+// accounts cannot control other processes or reconfigure the scheduler; those
+// actions are enforced as administrator-only in Task Manager and Settings.
+function sessionPermissions(){
+  const base = ['filesystem.read','filesystem.write','filesystem.delete','process.spawn','storage','notifications','audio','clipboard','network'];
+  if(isAdmin()) base.push('process.control');
+  return base;
+}
+function requireAdmin(actionLabel){
+  if(isAdmin()) return true;
+  notify('Permission denied', (actionLabel||'That action')+' requires an administrator account.', '🔒', '#ff5c5c');
+  return false;
+}
 
 const APP_REGISTRY = {
   filemanager:{name:'File Manager', icon:'🗂️', svgKey:'filemanager', color:'#7c6cff', system:true, pinned:true},
@@ -25,22 +192,36 @@ const APP_REGISTRY = {
   youtube:    {name:'PlayTube',     icon:'▶️', svgKey:'youtube', color:'#ff5c5c', system:true, pinned:false},
   spotify:    {name:'Wavelength',   icon:'🎧', svgKey:'spotify', color:'#1ed760', system:true, pinned:false},
   games:      {name:'Games',        icon:'🎮', color:'#7c6cff', system:true, pinned:false},
+  camera:     {name:'Camera',       icon:'📷', color:'#ff6b9d', system:true, pinned:true},
+  share:      {name:'Share',        icon:'📤', color:'#2fe6c9', system:true, pinned:false},
   pixelpaint: {name:'PixelPaint',   icon:'🎨', color:'#ff8fa3', system:false, pinned:false},
+  codeforge:  {name:'CodeForge',    icon:'⚡', color:'#5cc8ff', system:false, pinned:false},
 };
 
+// Each entry's `url` points at a real, live web app. Installing one just adds
+// it to the launcher; launching it opens Zen Browse (the real embedded
+// browser) navigated straight to that url — same live-iframe behavior as any
+// other site in Zen Browse, described at the top of this file.
 const SOFTWARE_CATALOG = [
-  {id:'sw-pixelpaint', name:'PixelPaint', cat:'Graphics', icon:'🎨', color:'#ff8fa3', size:'84 MB', rating:4.6, desc:'A lightweight raster & vector sketchpad for quick mockups and doodles.'},
-  {id:'sw-codeforge', name:'CodeForge', cat:'Developer Tools', icon:'🧑‍💻', color:'#5cc8ff', size:'212 MB', rating:4.8, desc:'A minimalist code editor with syntax highlighting and snippet support.'},
-  {id:'sw-inkflow', name:'InkFlow', cat:'Productivity', icon:'🖋️', color:'#ffd166', size:'46 MB', rating:4.4, desc:'Distraction-free long-form writing with focus mode and word goals.'},
-  {id:'sw-cipherbox', name:'CipherBox', cat:'Utilities', icon:'🔐', color:'#9b8cff', size:'18 MB', rating:4.7, desc:'Encrypt and organize sensitive local notes and credentials.'},
-  {id:'sw-tempo', name:'Tempo', cat:'Multimedia', icon:'🎚️', color:'#2fe6c9', size:'130 MB', rating:4.3, desc:'A simple multitrack audio mixer for podcasts and voice memos.'},
-  {id:'sw-atlas', name:'Atlas Maps', cat:'Internet', icon:'🗺️', color:'#4ade80', size:'96 MB', rating:4.5, desc:'Offline-friendly map viewer with saved pins and routes.'},
-  {id:'sw-studybuddy', name:'StudyBuddy', cat:'Education', icon:'🎓', color:'#ff9f5c', size:'58 MB', rating:4.2, desc:'Flashcards and spaced-repetition study sessions.'},
-  {id:'sw-vaultsync', name:'VaultSync', cat:'System Tools', icon:'💾', color:'#a7afc0', size:'12 MB', rating:4.1, desc:'Local backup snapshots for your files and settings.'},
-  {id:'sw-lumen', name:'Lumen Notes', cat:'Productivity', icon:'💡', color:'#ffe066', size:'38 MB', rating:4.6, desc:'Mind-mapping and sketch notes with a warm paper aesthetic.'},
-  {id:'sw-frameit', name:'FrameIt', cat:'Graphics', icon:'🖼️', color:'#ff6b6b', size:'71 MB', rating:4.3, desc:'Quick screenshot annotation and frame mockups.'},
+  {id:'sw-moviewatchlist', name:'Movie Watchlist', cat:'Entertainment', icon:'🎬', color:'#ff8fa3', size:'12 MB', rating:4.6, desc:'Search for movies and keep track of what you want to watch next.', url:'https://movie-watchlist-indol.vercel.app/'},
+  {id:'sw-crack', name:'Crack', cat:'Education', icon:'🎤', color:'#5cc8ff', size:'21 MB', rating:4.7, desc:'Adaptive, role-specific interview coach with real-time evaluation.', url:'https://crack-chi.vercel.app/'},
+  {id:'sw-timelinetug', name:'Timeline Tug', cat:'Games', icon:'⏳', color:'#ffd166', size:'9 MB', rating:4.5, desc:'A fast-paced historical timeline guessing game — was it earlier or later?', url:'https://timeline-tug.vercel.app/'},
+  {id:'sw-voxelengine', name:'Voxel Engine', cat:'Graphics', icon:'🧊', color:'#9b8cff', size:'34 MB', rating:4.3, desc:'A browser-based voxel engine demo for exploring block-built 3D worlds.', url:'https://prasadbahekar.github.io/voxel-engine/'},
+  {id:'sw-notevault', name:'NoteVault', cat:'Education', icon:'📚', color:'#4ade80', size:'27 MB', rating:4.6, desc:'A Class 12 resource hub that keeps handwritten notes and video lectures organized by subject and chapter.', url:'https://aryanbhatnagar0102.github.io/NoteVault/'},
+  {id:'sw-pastelbox', name:'PastelBox', cat:'Utilities', icon:'📦', color:'#ff9f5c', size:'8 MB', rating:4.2, desc:'A small, pastel-styled personal web app.', url:'https://boomertanjim.github.io/PastelBox/'},
+  {id:'sw-projectshub', name:'ProjectsHub AI/ML', cat:'Developer Tools', icon:'🤖', color:'#a7afc0', size:'15 MB', rating:4.4, desc:'Browse real-world AI and machine learning project ideas with source code and documentation.', url:'https://projecthub.samyaklabs.com/?category=AI+%2F+Machine+Learning'},
+  {id:'sw-stickynotes', name:'Sticky Notes', cat:'Productivity', icon:'🗒️', color:'#ffe066', size:'6 MB', rating:4.5, desc:'Quick, colorful sticky notes you can jot down and rearrange in the browser.', url:'https://sakinazehrapk-maker.github.io/stickynotes/'},
+  {id:'sw-resumeai', name:'Resume AI', cat:'Productivity', icon:'📄', color:'#ff6b6b', size:'19 MB', rating:4.4, desc:'AI-assisted resume builder to help put together and polish your resume.', url:'https://resume-ai-five-omega.vercel.app/'},
 ];
 window.SOFTWARE_CATALOG = SOFTWARE_CATALOG;
+
+// Launch a Software Hub / Start Menu app id. Catalog entries with a `url`
+// render as their own dedicated app window (see renderWebApp) — a real, live
+// iframe filling the whole window, not a Zen Browse tab — so installing one
+// makes it behave like any other native app in the launcher.
+function launchCatalogApp(id){
+  return openApp(id);
+}
 
 const WALLPAPER_CATALOG = [
   {id:'wall-main', name:'Main.gif', label:'Main'},
@@ -54,13 +235,19 @@ const WALLPAPER_CATALOG = [
 ];
 const WALLPAPER_PATH = name => 'wallpaper/' + encodeURIComponent(name);
 
+// Each entry's `url` points at a real, live game. Installed games render in
+// their own dedicated window via renderWebApp — the same real-iframe
+// mechanism as SOFTWARE_CATALOG apps — so they behave like real installed
+// apps rather than a browser tab. Note: one link the user provided
+// (You_are_not_alone) was sent twice; the duplicate was removed.
 const GAME_CATALOG = [
-  {id:'gm-nebulacrash', name:'Nebula Crash', icon:'🚀', color:'#7c6cff', size:'1.2 GB', rating:4.7, desc:'Arcade dodger through asteroid fields with rising difficulty.'},
-  {id:'gm-tidepool', name:'Tidepool Tactics', icon:'🐚', color:'#2fe6c9', size:'860 MB', rating:4.5, desc:'Turn-based strategy set in a shrinking coastal arena.'},
-  {id:'gm-emberkeep', name:'Ember Keep', icon:'🏰', color:'#ff8f5c', size:'2.4 GB', rating:4.8, desc:'Cozy castle-builder with a slow-burn story mode.'},
-  {id:'gm-pixelrunner', name:'Pixel Runner', icon:'🏃', color:'#ffd166', size:'340 MB', rating:4.3, desc:'Endless side-scroller with daily challenge seeds.'},
-  {id:'gm-glasslands', name:'Glasslands', icon:'🔷', color:'#9b8cff', size:'1.8 GB', rating:4.6, desc:'Puzzle exploration through a fractured crystal world.'},
-  {id:'gm-driftline', name:'Driftline', icon:'🏎️', color:'#4ade80', size:'2.1 GB', rating:4.4, desc:'Arcade racer with drift-scoring and custom tracks.'},
+  {id:'gm-crossorcrash', name:'Cross or Crash', cat:'Arcade', icon:'🚦', color:'#7c6cff', size:'11 MB', rating:4.4, desc:'A quick-reflex arcade game about crossing safely without crashing.', url:'https://khushnaseiba.github.io/crossorcrash/'},
+  {id:'gm-memorygame', name:'Memory Game', cat:'Puzzle', icon:'🧠', color:'#2fe6c9', size:'6 MB', rating:4.5, desc:'A classic card-flipping memory match game — find every pair.', url:'https://hrishikesh599.github.io/memory-game/'},
+  {id:'gm-spaceshooter', name:'Space Shooter', cat:'Arcade', icon:'🚀', color:'#ff8f5c', size:'14 MB', rating:4.3, desc:'A retro-style arcade space shooter — blast through waves of enemies.', url:'https://pateldhrupad011-sketch.github.io/Space-Shooter/'},
+  {id:'gm-notalone', name:'You Are Not Alone', cat:'Adventure', icon:'🌙', color:'#9b8cff', size:'9 MB', rating:4.2, desc:'A short, atmospheric browser adventure to play through in one sitting.', url:'http://khushnaseiba.github.io/You_are_not_alone/'},
+  {id:'gm-flappybird', name:'Flappy Bird', cat:'Arcade', icon:'🐦', color:'#ffd166', size:'4 MB', rating:4.1, desc:'A Flappy Bird–style tap-to-fly arcade game — see how far you can go.', url:'https://flappyyyy-birdd.netlify.app/'},
+  {id:'gm-theexit', name:'The Exit', cat:'Puzzle', icon:'🚪', color:'#4ade80', size:'8 MB', rating:4.3, desc:'A short escape-the-room style puzzle game — find your way to the exit.', url:'https://khushnaseiba.github.io/The_Exit/'},
+  {id:'gm-lagoslife', name:'Lagos Life', cat:'Simulation', icon:'🌆', color:'#ff9f5c', size:'12 MB', rating:4.4, desc:'Explore a lively Lagos-inspired browser game and experience city life.', url:'https://lagoslife.eliysites.com/'},
 ];
 
 // Real, publicly embeddable YouTube videos (official/Creative-Commons sources).
@@ -284,9 +471,180 @@ const SVG_ASSETS = {
   games:'booth.svg', about:'about.svg', battery:'battery.svg', bluetooth:'Bluetooth.svg', airplane:'airplane.svg',
   brightness:'brightness.svg', notification:'notification.svg', wifi:'wifi.svg', storage:'storage.svg', privacy:'privacy.svg'
 };
-function iconHtml(key, fallback){
+function iconHtml(key, fallback, imgUrl){
+  if(imgUrl) return `<span class="icon-svg asset-icon"><img src="${imgUrl}" alt="" draggable="false" onerror="this.parentNode.replaceWith(document.createTextNode('${(fallback||'📦').replace(/'/g,"\\'")}'))"></span>`;
   if(SVG_ASSETS[key]) return `<span class="icon-svg asset-icon"><img src="svg/${encodeURIComponent(SVG_ASSETS[key])}" alt="" draggable="false"></span>`;
   return ICONS[key] ? `<span class="icon-svg">${ICONS[key]}</span>` : (fallback||'');
+}
+// Real favicon lookup (Google's favicon service) — used to show each
+// installed Software Hub app/game's actual site icon instead of a generic
+// emoji, wherever a catalog entry has a real `url`.
+function hostnameOf(u){ try{ return new URL(u).hostname; }catch(e){ return ''; } }
+function faviconFor(u){ const h=hostnameOf(u); return h?`https://www.google.com/s2/favicons?domain=${h}&sz=64`:''; }
+// Icon for a Software Hub / Games catalog card — a real image when the entry
+// has a url (with a graceful emoji fallback if the image fails to load),
+// otherwise the catalog's emoji.
+// Hand-drawn 16x16 pixel-art icon for every catalog entry ('.' = transparent).
+// Real favicons were useless here: sites without one all came back as the same
+// generic globe. These are rendered as crisp SVG rects, so they scale cleanly.
+const PIXEL_ART = {
+  'sw-moviewatchlist': {pal:{K:'#1a1a2e',B:'#3a3f6b',Y:'#ffd166',R:'#ff5c7a',W:'#ffffff'}, rows:[
+    '................','.KKKKKKKKKKKKKK.','.KRRKWWKRRKWWKK.','.KKKKKKKKKKKKKK.','................',
+    '.KKKKKKKKKKKKKK.','.KBBBBBBBBBBBBK.','.KBBBBYBBBBBBBK.','.KBBBBYYBBBBBBK.','.KBBBBYYYBBBBBK.',
+    '.KBBBBYYYYBBBBK.','.KBBBBYYYBBBBBK.','.KBBBBYYBBBBBBK.','.KBBBBYBBBBBBBK.','.KKKKKKKKKKKKKK.','................']},
+  'sw-crack': {pal:{K:'#1a1a2e',S:'#dfe6f7',D:'#8890a8',R:'#ff5c7a'}, rows:[
+    '................','......KKKK......','.....KSSSSK.....','.....KSDSDK.....','.....KSSSSK.....','.....KSDSDK.....',
+    '.....KSSSSK.....','..K..KSDSDK..K..','..K..KSSSSK..K..','..KK..KKKK..KK..','...KK......KK...',
+    '....KKKKKKKK....','......KRRK......','......KRRK......','....KKKRRKKK....','................']},
+  'sw-timelinetug': {pal:{K:'#1a1a2e',Y:'#ffd166',W:'#dfe8ff',B:'#a0673f'}, rows:[
+    '................','..BBBBBBBBBBBB..','...KWWWWWWWWK...','...KWYYYYYYWK...','....KWYYYYWK....','.....KWYYWK.....',
+    '......KWYK......','.......KK.......','......KWYK......','.....KWWYWK.....','....KWWYYYWK....',
+    '...KWYYYYYYWK...','...KYYYYYYYYK...','...KKKKKKKKKK...','..BBBBBBBBBBBB..','................']},
+  'sw-voxelengine': {pal:{K:'#0f1b33',T:'#9af3ff',L:'#4aa3e8',R:'#2d63b8'}, rows:[
+    '................','.......KK.......','.....KKTTKK.....','...KKTTTTTTKK...','.KKTTTTTTTTTTKK.','..KKKTTTTTTKKK..',
+    '..KLLKKTTKKRRK..','..KLLLLKKRRRRK..','..KLLLLKKRRRRK..','..KLLLLKKRRRRK..','..KLLLLKKRRRRK..',
+    '..KLLLLKKRRRRK..','...KLLLKKRRRK...','....KLLKKRRK....','.....KKKKKK.....','................']},
+  'sw-notevault': {pal:{K:'#12281a',G:'#4ade80',W:'#ffffff',Y:'#ffd166'}, rows:[
+    '................','..KKKKKKKKYYKK..','..KGGGGGGGYYGK..','..KGWWWWWWYYGK..','..KGWKKKKKKWGK..','..KGWWWWWWWWGK..',
+    '..KGWKKKKKWWGK..','..KGWWWWWWWWGK..','..KGWKKKKKKWGK..','..KGWWWWWWWWGK..','..KGWWWWWWWWGK..',
+    '..KGGGGGGGGGGK..','..KKKKKKKKKKKK..','...KKKKKKKKKK...','................','................']},
+  'sw-pastelbox': {pal:{K:'#3a2a4a',P:'#ffb3d1',Q:'#c9b8ff',M:'#b8f0d8'}, rows:[
+    '......K..K......','.....KQKKQK.....','..KKKKKKKKKKKK..','..KPPPPQQPPPPK..','..KPPPPQQPPPPK..','..KKKKKKKKKKKK..',
+    '...KMMMQQMMMK...','...KMMMQQMMMK...','...KMMMQQMMMK...','...KMMMQQMMMK...','...KMMMQQMMMK...',
+    '...KMMMQQMMMK...','...KKKKKKKKKK...','................','................','................']},
+  'sw-projectshub': {pal:{K:'#1a1e33',S:'#c4cbe0',D:'#5b6280',C:'#2fe6c9',R:'#ff5c7a'}, rows:[
+    '.......KK.......','.......RR.......','..KKKKKKKKKKKK..','..KSSSSSSSSSSK..','..KSKKKSSKKKSK..','..KSKCKSSKCKSK..',
+    '..KSKKKSSKKKSK..','..KSSSSSSSSSSK..','..KSKCCCCCCKSK..','..KSSSSSSSSSSK..','..KKKKKKKKKKKK..',
+    '....KDDDDDDK....','...KDDDDDDDDK...','................','................','................']},
+  'sw-stickynotes': {pal:{K:'#5a4600',Y:'#ffe066',O:'#e0b400'}, rows:[
+    '................','..KKKKKKKKKKKK..','..KYYYYYYYYYYK..','..KYYYYYYYYYYK..','..KYKKKKKKYYYK..','..KYYYYYYYYYYK..',
+    '..KYKKKKKKKKYK..','..KYYYYYYYYYYK..','..KYKKKKKYYYYK..','..KYYYYYYYYYYK..','..KYYYYYYYYYYK..',
+    '..KYYYYYYYKOOK..','..KKKKKKKKKKKK..','................','................','................']},
+  'sw-resumeai': {pal:{K:'#1a2238',W:'#ffffff',B:'#5cc8ff',G:'#8890a8',Y:'#ffd166'}, rows:[
+    '................','..KKKKKKKKKK.Y..','..KWWWWWWWWKYYY.','..KWWBBBWWWK.Y..','..KWWWBWWWWK....','..KWBBBBBWWK....',
+    '..KWWWWWWWWK....','..KWGGGGGGWK....','..KWWWWWWWWK....','..KWGGGGGWWK....','..KWWWWWWWWK....',
+    '..KWGGGGGGWK....','..KWWWWWWWWK....','..KKKKKKKKKK....','................','................']},
+  'gm-crossorcrash': {pal:{K:'#1a1a2e',R:'#ff5c5c',C:'#8fd3ff',Y:'#ffd166',T:'#2b2b3d'}, rows:[
+    '................','................','................','................','......KKKKKK....','.....KRCCCCRK...',
+    '....KRRCCCCRRK..','..KKRRRRRRRRRKK.','.KRRRRRRRRRRRRYK','.KRRRRRRRRRRRRRK','.KKKKKKKKKKKKKKK',
+    '..KTTK....KTTK..','..KTTK....KTTK..','...KK......KK...','................','..YYYY....YYYY..']},
+  'gm-memorygame': {pal:{K:'#1a1a2e',B:'#7c6cff',W:'#ffffff',P:'#ff7aa8'}, rows:[
+    '................','.KKKKKKK.KKKKKKK','.KBBBBBK.KWWWWWK','.KBWBWBK.KWPWPWK','.KBBWBBK.KPPPPPK','.KBWBWBK.KWPPPWK',
+    '.KBBBBBK.KWWPWWK','.KBWBWBK.KWWWWWK','.KBBBBBK.KWWWWWK','.KBWBWBK.KWWWWWK','.KBBWBBK.KWWWWWK',
+    '.KBBBBBK.KWWWWWK','.KKKKKKK.KKKKKKK','................','................','................']},
+  'gm-spaceshooter': {pal:{K:'#141428',W:'#ffffff',R:'#ff5c5c',B:'#5cc8ff',G:'#a7afc0',O:'#ffb347',Y:'#ffe066'}, rows:[
+    '.......KK.......','......KWWK......','.....KWWWWK.....','.....KWBBWK.....','.....KWBBWK.....','.....KWWWWK.....',
+    '....KKWWWWKK....','...KRKWWWWKRK...','..KRRKWWWWKRRK..','..KRRKGGGGKRRK..','..KKKKGGGGKKKK..',
+    '.....KOOOOK.....','......KOOK......','.......YY.......','................','................']},
+  'gm-notalone': {pal:{K:'#241a3d',W:'#f2eeff',P:'#ff9ec4'}, rows:[
+    '................','....KKKKKKKK....','...KWWWWWWWWK...','..KWWWWWWWWWWK..','..KWWKKWWKKWWK..','..KWWKKWWKKWWK..',
+    '..KWWWWWWWWWWK..','..KWPWWKKWWPWK..','..KWWWWWWWWWWK..','..KWWWWWWWWWWK..','..KWWWWWWWWWWK..',
+    '..KWWWWWWWWWWK..','..KWWKWWWWKWWK..','..KWKKKWWKKKWK..','...K...KK...K...','................']},
+  'gm-flappybird': {pal:{K:'#3a2a00',Y:'#ffd166',W:'#ffffff',R:'#ff5c5c',O:'#ff9f5c'}, rows:[
+    '................','................','....KKKKKKK.....','..KKYYYYYYWWK...','.KYYYYYYYYWKWK..','.KOOOYYYYYWWWKRR',
+    '.KOOOOYYYYYYKRRK','.KOOOYYYYYYYKKK.','..KYYYYYYYYYK...','...KKYYYYYKK....','.....KKKKK......',
+    '................','................','................','................','................']},
+  'gm-theexit': {pal:{K:'#1f140c',B:'#a0673f',D:'#5c3a24',G:'#4ade80',Y:'#ffd166'}, rows:[
+    '................','....KKKKKKKK....','....KGGGGGGK....','....KKKKKKKK....','..KKKKKKKKKKKK..','..KBBBBBBBBBBK..',
+    '..KBDDDDDDDDBK..','..KBDBBBBBBDBK..','..KBDBBBBBBDBK..','..KBDBBBBBYDBK..','..KBDBBBBBBDBK..',
+    '..KBDBBBBBBDBK..','..KBDDDDDDDDBK..','..KBBBBBBBBBBK..','..KKKKKKKKKKKK..','................']},
+};
+function pixelRects(id){
+  const art = PIXEL_ART[id]; if(!art) return '';
+  let out = '';
+  art.rows.forEach((row,y)=>{
+    row = (row + '................').slice(0,16);
+    let x = 0;
+    while(x<16){
+      const ch = row[x];
+      if(ch==='.' || !art.pal[ch]){ x++; continue; }
+      let e = x; while(e<16 && row[e]===ch) e++;
+      out += `<rect x="${x}" y="${y}" width="${e-x}" height="1" fill="${art.pal[ch]}"/>`;
+      x = e;
+    }
+  });
+  return out;
+}
+function artUri(id){
+  if(!PIXEL_ART[id]) return '';
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">${pixelRects(id)}</svg>`);
+}
+function hashStr(str){ let h=2166136261; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+// Generated cover art for a store card/hero: twinkling pixel stars, rolling
+// pixel hills, and a big faded copy of the app's own icon — unique per app
+// (seeded by its id) so every card has its own backdrop.
+function coverArt(item, W, H){
+  W = W||320; H = H||180;
+  let seed = hashStr(item.id);
+  const r = ()=>{ seed = (Math.imul(seed,1664525)+1013904223)>>>0; return seed/4294967296; };
+  let stars = '';
+  for(let i=0;i<Math.round(W/9);i++){
+    const x = Math.floor(r()*(W/4))*4, y = Math.floor(r()*(H*.62/4))*4, big = r()<.18, sz = big?6:3;
+    stars += `<rect x="${x}" y="${y}" width="${sz}" height="${sz}" fill="#fff" opacity="${(.25+r()*.5).toFixed(2)}"/>`;
+  }
+  const phase = r()*6; let hills = '';
+  for(let x=0;x<W;x+=16){
+    const h = 16 + Math.round((Math.sin(x/58+phase)*14 + r()*7)/8)*8 + H*.08;
+    hills += `<rect x="${x}" y="${(H-h).toFixed(0)}" width="16" height="${h.toFixed(0)}" fill="#000" opacity=".3"/>`;
+  }
+  let wm = '';
+  if(PIXEL_ART[item.id]){
+    const sc = (H*.66)/16, tx = W>400 ? W*.7 : W-16*sc-W*.05;
+    wm = `<g transform="translate(${tx.toFixed(0)} ${(H*.08).toFixed(0)}) scale(${sc.toFixed(2)})" opacity=".22">${pixelRects(item.id)}</g>`;
+  }
+  return `<svg class="store-cover-art" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice" shape-rendering="crispEdges">${stars}${wm}${hills}</svg>`;
+}
+function catalogCardIcon(a){
+  const uri = a ? artUri(a.id) : '';
+  if(uri) return `<img src="${uri}" alt="" draggable="false" style="width:100%;height:100%;display:block;image-rendering:pixelated;">`;
+  const fav = a && a.url ? faviconFor(a.url) : '';
+  if(!fav) return escapeHtml(a.icon||'📦');
+  const fallback = (a.icon||'📦').replace(/'/g,"\\'");
+  return `<img src="${fav}" alt="" style="width:100%;height:100%;object-fit:contain;" onerror="this.replaceWith(document.createTextNode('${fallback}'))">`;
+}
+// Shared Software Hub / Games store UI — a real, filled-vs-empty star rating
+// string, and a single reusable card/hero renderer so app and game listings
+// look and behave identically.
+function starRating(r){
+  const n = Math.max(0, Math.min(5, Math.round(r||0)));
+  return '★'.repeat(n) + '☆'.repeat(5-n);
+}
+function catalogCard(item, kind, installedList, installing, playLabel){
+  const installed = installedList.includes(item.id);
+  const prog = installing[item.id];
+  return `<div class="store-card">
+    <div class="store-cover" style="background:linear-gradient(135deg, ${item.color}, #0a0c12);">
+      ${coverArt(item)}
+      <div class="store-glyph">${catalogCardIcon(item)}</div>
+    </div>
+    <div class="store-card-body">
+      <div class="store-card-title">${escapeHtml(item.name)}</div>
+      <div class="store-card-meta"><span class="store-stars">${starRating(item.rating)}</span><span>${item.rating}</span><span>·</span><span>${escapeHtml(item.size)}</span></div>
+      ${item.cat?`<div class="store-chip">${escapeHtml(item.cat)}</div>`:''}
+      <div class="store-desc">${escapeHtml(item.desc)}</div>
+      ${prog!==undefined
+        ? `<div class="progress-track"><div class="progress-fill" style="width:${Math.min(prog,100)}%;"></div></div><div class="store-progress-label">${prog<100?'Installing…':'Finishing up…'} ${Math.floor(prog)}%</div>`
+        : installed
+          ? `<div class="store-actions"><button class="btn primary" data-launch="${item.id}" data-kind="${kind}" style="flex:1;">${playLabel}</button><button class="btn icon-btn" data-uninstall="${item.id}" data-kind="${kind}" title="Uninstall">🗑</button></div>`
+          : `<button class="btn primary" data-install="${item.id}" data-kind="${kind}" style="width:100%;">⬇ Install</button>`}
+    </div>
+  </div>`;
+}
+function storeHero(item, kind, installedList, ctaLabel){
+  const installed = installedList.includes(item.id);
+  return `<div class="store-hero" style="background-image:linear-gradient(120deg, ${item.color}88, #0a0c12 90%);">
+    ${coverArt(item, 640, 150)}
+    <div class="store-hero-badge">${catalogCardIcon(item)}</div>
+    <div class="store-hero-info">
+      <div class="store-hero-eyebrow">${kind==='game'?'FEATURED GAME':"EDITOR'S PICK"}</div>
+      <div class="store-hero-title">${escapeHtml(item.name)}</div>
+      <div class="store-hero-desc">${escapeHtml(item.desc)}</div>
+      <div class="store-hero-meta"><span class="store-stars">${starRating(item.rating)}</span><span>${item.rating}</span><span>·</span><span>${escapeHtml(item.size)}</span>${item.cat?`<span class="store-chip">${escapeHtml(item.cat)}</span>`:''}</div>
+    </div>
+    <div class="store-hero-cta">${installed
+      ? `<button class="btn primary" data-launch="${item.id}" data-kind="${kind}">${ctaLabel}</button>`
+      : `<button class="btn primary" data-install="${item.id}" data-kind="${kind}">⬇ Install</button>`}</div>
+  </div>`;
 }
 
 // Custom cursor characters (provided by the user), pre-scaled to 32x32 PNG —
@@ -350,18 +708,163 @@ function defaultState(){
     browserBookmarks:[{title:'Wikipedia', url:'https://www.wikipedia.org'}, {title:'Example.com', url:'https://example.com'}],
     customTracks:[],
     likedTracks:[],
+    codeProjects:[], // CodeForge projects; those with installed:true become launchable apps
   };
 }
 
 function loadState(){
-  try{
-    const raw = localStorage.getItem(LS_KEY);
-    if(raw) return Object.assign(defaultState(), JSON.parse(raw));
-  }catch(e){}
-  return defaultState();
+  ensureStorageSchema();
+  const raw = localStorage.getItem(LS_KEY);
+  const parsed = safeJsonParse(raw, null);
+  if(!parsed) return defaultState();
+  const valid = validateUserState(parsed);
+  const currentUserId = activeUserId || 'guest';
+  const snapshot = loadStateSnapshot(currentUserId);
+  if(snapshot && !parsed.onboarded && snapshot.onboarded){
+    return snapshot;
+  }
+  return valid;
+}
+function persistedStateJson(value){
+  return JSON.stringify(value, (key, item)=>
+    key==='assetPath' && typeof item==='string' && /^(blob|data):/.test(item) ? undefined : item
+  );
 }
 function saveState(){
-  try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+  if(!state){ state = defaultState(); }
+  state = validateUserState(state);
+  const serialized = persistedStateJson(state);
+  try{
+    localStorage.setItem(STORAGE_SCHEMA_KEY, JSON.stringify(STORAGE_SCHEMA_VERSION));
+    localStorage.setItem(LS_KEY, serialized);
+    lastPersistedState = serialized;
+  }catch(e){}
+  saveStateSnapshot('latest');
+  queueCloudStateSync();
+}
+
+function autosaveState(){
+  if(typeof state==='undefined' || !state) return;
+  const current = persistedStateJson(validateUserState(state));
+  if(current !== lastPersistedState) saveState();
+}
+
+setInterval(autosaveState, 5000);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='hidden'){
+    autosaveState();
+    syncCloudStateNow();
+  }
+});
+window.addEventListener('pagehide', ()=>{
+  autosaveState();
+  syncCloudStateNow();
+});
+window.addEventListener('beforeunload', autosaveState);
+
+async function syncCloudStateNow(){
+  if(!supabaseClient || !cloudUser || !cloudStateReady || !state) return;
+  const userId = cloudUser.id;
+  const snapshot = JSON.parse(persistedStateJson(validateUserState(state)));
+  const {error} = await supabaseClient.from('user_state').upsert({
+    user_id: userId,
+    state: snapshot,
+    updated_at: new Date().toISOString()
+  }, {onConflict:'user_id'});
+  if(error && Date.now() - lastCloudSyncWarning > 30000){
+    lastCloudSyncWarning = Date.now();
+    console.warn('Zen OS cloud sync failed:', error.message);
+  }
+}
+
+function queueCloudStateSync(){
+  if(!supabaseClient || !cloudUser || !cloudStateReady) return;
+  clearTimeout(cloudSyncTimer);
+  const userId = cloudUser.id;
+  cloudSyncTimer = setTimeout(async ()=>{
+    if(!cloudUser || cloudUser.id !== userId || !cloudStateReady) return;
+    await syncCloudStateNow();
+  }, 900);
+}
+
+window.ZenOSStorage = {
+  schemaVersion: STORAGE_SCHEMA_VERSION,
+  exportCurrentUserProfile,
+  importUserProfileFromJson,
+  downloadCurrentUserProfile,
+  saveStateSnapshot,
+  loadStateSnapshot,
+  validateUserState,
+  ensureStorageSchema
+};
+
+/* ---------------------- CAMERA PHOTO STORAGE ----------------------
+   Photos are real image Blobs, far too big for the localStorage save-state
+   (~5 MB cap), so the pixels live in IndexedDB. The Pictures folder only
+   keeps a small file entry with an `idbKey`; on boot we rebuild each photo's
+   blob: URL from IndexedDB so File Manager and Camera can show it. */
+const PHOTO_DB = 'zenos-media', PHOTO_STORE = 'photos';
+function photoDb(){
+  return new Promise((resolve,reject)=>{
+    if(!window.indexedDB){ reject(new Error('This browser has no IndexedDB, so photos cannot be stored.')); return; }
+    const req = indexedDB.open(PHOTO_DB, 1);
+    req.onupgradeneeded = ()=>{ req.result.createObjectStore(PHOTO_STORE); };
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error||new Error('Could not open photo storage.'));
+  });
+}
+function idbRun(mode, fn){
+  return photoDb().then(db=>new Promise((resolve,reject)=>{
+    const tx = db.transaction(PHOTO_STORE, mode), store = tx.objectStore(PHOTO_STORE);
+    const req = fn(store);
+    tx.oncomplete = ()=>{ db.close(); resolve(req && req.result); };
+    tx.onerror = tx.onabort = ()=>{ db.close(); reject(tx.error||new Error('Photo storage failed (disk may be full).')); };
+  }));
+}
+const idbPut = (key, blob)=>idbRun('readwrite', st=>st.put(blob, key));
+const idbGet = key=>idbRun('readonly', st=>st.get(key));
+const idbKeys = ()=>idbRun('readonly', st=>st.getAllKeys());
+const idbDel = key=>idbRun('readwrite', st=>st.delete(key));
+function collectPhotoNodes(node, out){
+  (node.children||[]).forEach(c=>{ if(c.idbKey) out.push(c); if(c.children) collectPhotoNodes(c,out); });
+  return out;
+}
+async function hydrateCameraPhotos(){
+  try{
+    const nodes = collectPhotoNodes(state.fs, []);
+    for(const n of nodes){
+      const blob = await idbGet(n.idbKey);
+      if(blob) n.assetPath = URL.createObjectURL(blob);
+    }
+    // Sweep blobs whose file was deleted from Pictures, so storage doesn't leak.
+    const used = new Set(nodes.map(n=>n.idbKey));
+    (await idbKeys()||[]).forEach(k=>{ if(!used.has(k)) idbDel(k).catch(()=>{}); });
+    if(nodes.length) document.dispatchEvent(new CustomEvent('zenfs:changed'));
+  }catch(e){ /* storage unavailable: photos simply won't show */ }
+}
+function picturesFolder(){
+  let pics = (state.fs.children||[]).find(n=>n.name==='Pictures' && n.type==='folder');
+  if(!pics){ pics = {id:uid('f'), name:'Pictures', type:'folder', children:[]}; state.fs.children = state.fs.children||[]; state.fs.children.push(pics); }
+  pics.children = pics.children||[];
+  return pics;
+}
+async function savePhotoToPictures(blob, width, height, opts){
+  opts = opts || {};
+  const prefix = opts.prefix || 'IMG', ext = opts.ext || 'jpg', mime = opts.mime || 'image/jpeg';
+  const pics = picturesFolder();
+  const d = new Date(), p2 = n=>String(n).padStart(2,'0');
+  const base = `${prefix}_${d.getFullYear()}${p2(d.getMonth()+1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  let name = `${base}.${ext}`, i = 1;
+  while(pics.children.some(c=>c.name===name)) name = `${base}_${i++}.${ext}`;
+  const key = uid('photo');
+  await idbPut(key, blob);   // throws if the disk quota is exceeded -> caller shows the error
+  const node = {id:uid('f'), name, type:'image', content:'', assetPath:URL.createObjectURL(blob), idbKey:key,
+    mime, size:blob.size, width, height, owner:'root', group:'users', permissions:'rw-r--r--',
+    createdAt:Date.now(), modifiedAt:Date.now(), accessedAt:Date.now()};
+  pics.children.push(node);
+  saveState();
+  document.dispatchEvent(new CustomEvent('zenfs:changed'));
+  return node;
 }
 
 function ensureWallpaperFiles(){
@@ -410,13 +913,13 @@ function openApp(appId, opts){
     const existing = windows.find(w=>w.appId===appId && !opts.forceNew);
     if(existing){ focusWindow(existing.id); if(existing.minimized) restoreWindow(existing.id); return existing.id; }
   }
-  const meta = APP_REGISTRY[appId] || {name:appId, icon:'❔'};
+  const meta = appMeta(appId);
   const id = uid('win');
   const count = windows.length;
-  const w = { id, appId, title: opts.title || meta.name, icon: meta.icon, svgKey: meta.svgKey,
+  const w = { id, appId, title: opts.title || meta.name, icon: meta.icon, svgKey: meta.svgKey, favicon: meta.favicon || null,
     x: 90 + (count%6)*36, y: 60 + (count%6)*30, w: opts.w||760, h: opts.h||520,
     minimized:false, maximized:false, z: ++zTop, data: opts.data||{}, pid: null };
-  w.pid = window.ZenKernel ? ZenKernel.process.spawn(meta.name, {appId: appId, parentPid: opts.parentPid || null}) : null;
+  w.pid = window.ZenKernel ? ZenKernel.process.spawn(meta.name, {appId: appId, parentPid: opts.parentPid || null, permissions: sessionPermissions()}) : null;
   windows.push(w);
   winInstances[id] = { cwd:['root'] };
   pushRecent(appId);
@@ -438,6 +941,8 @@ function closeWindow(id){
   }
   const el = document.getElementById(id);
   if(el){ el.classList.add('closing'); setTimeout(()=>el.remove(), 150); }
+  const closingInst = winInstances[id];
+  if(closingInst && typeof closingInst.cleanup==='function'){ try{ closingInst.cleanup(); }catch(e){} }
   windows = windows.filter(w=>w.id!==id);
   delete winInstances[id];
   renderTaskbarApps();
@@ -487,7 +992,7 @@ function renderWindow(w){
   el.style.left = w.x+'px'; el.style.top = w.y+'px'; el.style.width = w.w+'px'; el.style.height = w.h+'px'; el.style.zIndex = w.z;
   el.innerHTML = `
     <div class="titlebar" data-drag="${w.id}">
-      <span class="tglyph">${iconHtml(w.svgKey, w.icon)}</span>
+      <span class="tglyph">${iconHtml(w.svgKey, w.icon, w.favicon)}</span>
       <span class="ttitle">${escapeHtml(w.title)}</span>
       <div class="wctl">
         <button class="wbtn min" title="Minimize">–</button>
@@ -550,10 +1055,10 @@ function renderTaskbarApps(){
   const box = document.getElementById('taskbar-apps');
   const runningIds = [...new Set(windows.map(w=>w.appId))];
   box.innerHTML = runningIds.map(appId=>{
-    const meta = APP_REGISTRY[appId] || {icon:'❔'};
+    const meta = appMeta(appId);
     const w = windows.find(x=>x.appId===appId);
     const isActive = w && w.id===activeWinId && !w.minimized;
-    return `<div class="tb-app running ${isActive?'active':''}" data-app="${appId}" title="${meta.name}">${iconHtml(meta.svgKey, meta.icon)}</div>`;
+    return `<div class="tb-app running ${isActive?'active':''}" data-app="${appId}" title="${escapeHtml(meta.name)}">${iconHtml(meta.svgKey, meta.icon, meta.favicon)}</div>`;
   }).join('');
   box.querySelectorAll('.tb-app').forEach(elm=>{
     elm.addEventListener('click', ()=>{
@@ -794,6 +1299,126 @@ document.getElementById('taskbar-search').addEventListener('click', ()=>{
   setTimeout(()=>{ const inp = document.querySelector('#start-menu .sm-search input'); if(inp) inp.focus(); }, 30);
 });
 
+/* ====================================================================
+   COMMAND PALETTE  (Ctrl+K / Ctrl+Shift+P)
+   A single searchable launcher over apps, catalog games/software,
+   Settings sections and real system actions. Runs entirely in-page, so
+   the shortcut is always delivered (unlike Alt+Tab, which the host OS
+   grabs first).
+==================================================================== */
+let paletteOpen = false, paletteIndex = 0, paletteResults = [];
+function paletteCommands(){
+  const cmds = [];
+  const seen = new Set();
+  allAppIds().forEach(id=>{ if(seen.has(id)) return; seen.add(id); const m=appMeta(id); cmds.push({ icon:iconHtml(m.svgKey,m.icon,m.favicon), title:m.name, sub:APP_REGISTRY[id]?'System app':'App', keywords:m.name, run:()=>openApp(id) }); });
+  GAME_CATALOG.forEach(g=>{ if(seen.has(g.id)) return; cmds.push({ icon:g.icon, title:g.name, sub:'Game · '+g.cat, keywords:g.name+' '+g.desc, run:()=>openApp(g.id) }); });
+  SOFTWARE_CATALOG.forEach(s=>{ if(seen.has(s.id)) return; cmds.push({ icon:s.icon, title:s.name, sub:'App · '+s.cat, keywords:s.name+' '+s.desc, run:()=>openApp(s.id) }); });
+  [['personalization','Appearance'],['display','Display'],['sound','Sound'],['notifications','Notifications'],['network','Network'],['privacy','Privacy'],['storage','Storage'],['apps','Apps'],['system','System'],['about','About']].forEach(([sec,label])=>{
+    cmds.push({ icon:'⚙️', title:'Settings: '+label, sub:'Settings', keywords:'settings '+label+' '+sec, run:()=>openApp('settings',{data:{section:sec}}) });
+  });
+  cmds.push({ icon:'🌙', title:(state.settings.nightlight?'Disable':'Enable')+' Night Light', sub:'System action', keywords:'night light warm display', run:()=>{ state.settings.nightlight=!state.settings.nightlight; applyDisplayEffects(); saveState(); } });
+  cmds.push({ icon:'🔕', title:(state.settings.dnd?'Turn off':'Turn on')+' Do Not Disturb', sub:'System action', keywords:'dnd do not disturb quiet', run:()=>{ state.settings.dnd=!state.settings.dnd; saveState(); refreshNetworkUi(); } });
+  cmds.push({ icon:'📶', title:(state.settings.wifi?'Disable':'Enable')+' Wi-Fi', sub:'System action', keywords:'wifi network internet', run:()=>{ state.settings.wifi=!state.settings.wifi; saveState(); refreshNetworkUi(); } });
+  cmds.push({ icon:'📸', title:'Take Screenshot', sub:'System action', keywords:'screenshot capture screen', run:()=>takeScreenshot() });
+  cmds.push({ icon:'🔒', title:'Lock', sub:'Power', keywords:'lock', run:()=>handlePower('lock') });
+  cmds.push({ icon:'💤', title:'Sleep', sub:'Power', keywords:'sleep', run:()=>handlePower('sleep') });
+  cmds.push({ icon:'🔁', title:'Restart', sub:'Power', keywords:'restart reboot', run:()=>handlePower('restart') });
+  cmds.push({ icon:'⏻', title:'Shut down', sub:'Power', keywords:'shutdown power off', run:()=>handlePower('shutdown') });
+  return cmds;
+}
+function openCommandPalette(){
+  paletteOpen = true; paletteIndex = 0;
+  closeAllPanels();
+  const el = document.getElementById('cmd-palette');
+  el.innerHTML = `<div class="cp-backdrop"></div>
+    <div class="cp-box" role="dialog">
+      <div class="cp-search"><span>⌘</span><input id="cp-input" placeholder="Search apps, settings and actions…" autocomplete="off" spellcheck="false"></div>
+      <div class="cp-list" id="cp-list"></div>
+      <div class="cp-hint">↑↓ navigate · ↵ open · esc close</div>
+    </div>`;
+  el.classList.add('open');
+  const input = el.querySelector('#cp-input');
+  filterPalette('');
+  input.addEventListener('input', ()=>{ paletteIndex=0; filterPalette(input.value); });
+  input.addEventListener('keydown', e=>{
+    if(e.key==='ArrowDown'){ e.preventDefault(); paletteIndex=Math.min(paletteResults.length-1, paletteIndex+1); paintPalette(); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); paletteIndex=Math.max(0, paletteIndex-1); paintPalette(); }
+    else if(e.key==='Enter'){ e.preventDefault(); runPaletteIndex(paletteIndex); }
+    else if(e.key==='Escape'){ e.preventDefault(); closeCommandPalette(); }
+  });
+  el.querySelector('.cp-backdrop').addEventListener('mousedown', closeCommandPalette);
+  setTimeout(()=>input.focus(), 20);
+}
+function filterPalette(q){
+  const all = paletteCommands();
+  const query = (q||'').trim().toLowerCase();
+  paletteResults = !query ? all : all.filter(c=>(c.title+' '+c.keywords+' '+c.sub).toLowerCase().includes(query));
+  paintPalette();
+}
+function paintPalette(){
+  const list = document.getElementById('cp-list'); if(!list) return;
+  if(!paletteResults.length){ list.innerHTML = `<div class="cp-empty">No matching commands</div>`; return; }
+  list.innerHTML = paletteResults.map((c,i)=>`<div class="cp-item ${i===paletteIndex?'active':''}" data-i="${i}"><span class="cp-ic">${c.icon}</span><span class="cp-tt">${escapeHtml(c.title)}</span><span class="cp-sub">${escapeHtml(c.sub)}</span></div>`).join('');
+  list.querySelectorAll('[data-i]').forEach(el=>el.addEventListener('click', ()=>runPaletteIndex(+el.dataset.i)));
+  const active = list.querySelector('.cp-item.active'); if(active) active.scrollIntoView({block:'nearest'});
+}
+function runPaletteIndex(i){
+  const cmd = paletteResults[i]; if(!cmd) return;
+  closeCommandPalette();
+  try{ cmd.run(); }catch(err){ console.error(err); }
+}
+function closeCommandPalette(){
+  paletteOpen = false;
+  const el = document.getElementById('cmd-palette');
+  el.classList.remove('open'); el.innerHTML='';
+}
+function toggleCommandPalette(){ paletteOpen ? closeCommandPalette() : openCommandPalette(); }
+
+/* ====================================================================
+   WINDOW SWITCHER  (Alt+Tab best-effort, Ctrl+` reliable)
+   Cycles open windows in most-recently-used order. Alt+Tab is offered
+   because it's expected, but the host OS usually intercepts it before
+   the browser sees it — so Ctrl+` (backtick) is provided as an in-page
+   shortcut that always works.
+==================================================================== */
+let switcherActive = false, switcherMod = null, switcherIndex = 0, switcherOrder = [];
+function openSwitcher(mod, dir){
+  const list = windows.slice().sort((a,b)=>b.z-a.z);
+  if(list.length < 2) return;
+  if(!switcherActive){ switcherActive=true; switcherMod=mod; switcherOrder=list; switcherIndex=1; }
+  else { switcherIndex = (switcherIndex + dir + switcherOrder.length) % switcherOrder.length; }
+  paintSwitcher();
+}
+function paintSwitcher(){
+  const el = document.getElementById('alt-tab');
+  el.innerHTML = `<div class="sw-grid">${switcherOrder.map((w,i)=>{ const m=appMeta(w.appId); return `<div class="sw-item ${i===switcherIndex?'active':''}"><div class="sw-icon">${iconHtml(m.svgKey,m.icon,m.favicon)}</div><div class="sw-title">${escapeHtml(w.title)}</div></div>`; }).join('')}</div>`;
+  el.classList.add('open');
+}
+function commitSwitcher(){
+  if(!switcherActive) return;
+  switcherActive=false;
+  document.getElementById('alt-tab').classList.remove('open');
+  const w = switcherOrder[switcherIndex];
+  if(w){ if(w.minimized) restoreWindow(w.id); else focusWindow(w.id); }
+}
+function cancelSwitcher(){ switcherActive=false; document.getElementById('alt-tab').classList.remove('open'); }
+
+document.addEventListener('keydown', e=>{
+  if(e.key==='Tab' && e.altKey){ e.preventDefault(); openSwitcher('Alt', e.shiftKey?-1:1); return; }
+  if(e.ctrlKey && e.code==='Backquote'){ e.preventDefault(); openSwitcher('Control', e.shiftKey?-1:1); return; }
+  if(switcherActive){
+    if(e.key==='Tab'){ e.preventDefault(); openSwitcher(switcherMod, e.shiftKey?-1:1); return; }
+    if(e.key==='Escape'){ e.preventDefault(); cancelSwitcher(); return; }
+    return;
+  }
+  if((e.ctrlKey||e.metaKey) && !e.altKey && !e.shiftKey && (e.key==='k'||e.key==='K')){ e.preventDefault(); toggleCommandPalette(); return; }
+  if(e.ctrlKey && e.shiftKey && (e.key==='p'||e.key==='P')){ e.preventDefault(); toggleCommandPalette(); return; }
+}, true);
+document.addEventListener('keyup', e=>{
+  if(!switcherActive) return;
+  if((switcherMod==='Alt' && !e.altKey) || (switcherMod==='Control' && !e.ctrlKey)) commitSwitcher();
+});
+
 /* ---------------------- START MENU ---------------------- */
 let smTab = 'pinned';
 function renderStartMenu(){
@@ -812,6 +1437,7 @@ function renderStartMenu(){
       </div>
       <div class="sm-power">
         <button class="pwr-btn" data-pwr="lock" title="Lock">🔒</button>
+        <button class="pwr-btn" data-pwr="signout" title="Sign out">🚪</button>
         <button class="pwr-btn" data-pwr="sleep" title="Sleep">💤</button>
         <button class="pwr-btn" data-pwr="restart" title="Restart">🔁</button>
         <button class="pwr-btn" data-pwr="shutdown" title="Shut down">⏻</button>
@@ -825,14 +1451,18 @@ function renderStartMenu(){
 }
 function tabBtn(id,label){ return `<button class="sm-tab ${smTab===id?'active':''}" data-tab="${id}">${label}</button>`; }
 
+function installedUserApps(){ return (state.codeProjects||[]).filter(p=>p.installed); }
+function userAppById(id){ return (state.codeProjects||[]).find(p=>p.id===id); }
 function allAppIds(){
-  return [...Object.keys(APP_REGISTRY), ...state.installedApps];
+  return [...Object.keys(APP_REGISTRY), ...state.installedApps, ...installedUserApps().map(p=>p.id)];
 }
 function appMeta(id){
   if(APP_REGISTRY[id]) return APP_REGISTRY[id];
-  const sw = SOFTWARE_CATALOG.find(s=>s.id===id);
-  if(sw) return {name:sw.name, icon:sw.icon, color:sw.color};
-  return {name:id, icon:'❔', color:'#888'};
+  const proj = userAppById(id);
+  if(proj) return {name:proj.name, icon:proj.icon||'🧩', color:proj.color||'#5cc8ff', favicon:null};
+  const sw = SOFTWARE_CATALOG.find(s=>s.id===id) || GAME_CATALOG.find(s=>s.id===id);
+  if(sw) return {name:sw.name, icon:sw.icon, color:sw.color, favicon: artUri(sw.id) || (sw.url?faviconFor(sw.url):null)};
+  return {name:id, icon:'❓', color:'#888'};
 }
 
 function renderSmContent(query){
@@ -857,7 +1487,7 @@ function renderSmContent(query){
   } else if(smTab==='games'){
     const installed = state.installedGames;
     box.innerHTML = `<div class="sm-section-title">Installed Games</div>
-      <div class="sm-list">${installed.length? installed.map(id=>{ const g=GAME_CATALOG.find(x=>x.id===id); return g?smRow('games',{name:g.name, icon:g.icon}):''; }).join('') : `<div class="np-empty">No games installed — open the Games app to browse</div>`}</div>
+      <div class="sm-list">${installed.length? installed.map(id=>{ const g=GAME_CATALOG.find(x=>x.id===id); return g?smRow(g.id, appMeta(g.id)):''; }).join('') : `<div class="np-empty">No games installed — open the Games app to browse</div>`}</div>
       <div class="sm-section-title" style="margin-top:6px;">Games App</div><div class="sm-grid">${smApp('games', APP_REGISTRY.games)}</div>`;
   } else if(smTab==='recent'){
     box.innerHTML = `<div class="sm-section-title">Recently Used</div><div class="sm-list">${
@@ -866,13 +1496,13 @@ function renderSmContent(query){
   }
   bindSmRows(box);
 }
-function smApp(id,m){ return `<div class="sm-app" data-app="${id}"><div class="g" style="background:${m.color}33; color:${m.color}">${iconHtml(m.svgKey, m.icon)}</div><div class="n">${escapeHtml(m.name)}</div></div>`; }
-function smRow(id,m){ return `<div class="sm-row" data-app="${id}"><div class="g" style="background:${m.color}33; color:${m.color}">${iconHtml(m.svgKey, m.icon)}</div><div class="n">${escapeHtml(m.name)}</div></div>`; }
+function smApp(id,m){ return `<div class="sm-app" data-app="${id}"><div class="g" style="background:${m.color}33; color:${m.color}">${iconHtml(m.svgKey, m.icon, m.favicon)}</div><div class="n">${escapeHtml(m.name)}</div></div>`; }
+function smRow(id,m){ return `<div class="sm-row" data-app="${id}"><div class="g" style="background:${m.color}33; color:${m.color}">${iconHtml(m.svgKey, m.icon, m.favicon)}</div><div class="n">${escapeHtml(m.name)}</div></div>`; }
 function bindSmRows(box){
   box.querySelectorAll('[data-app]').forEach(elm=>{
     elm.addEventListener('click', ()=>{
       const id = elm.dataset.app;
-      openApp(id);
+      launchCatalogApp(id);
       document.getElementById('start-menu').classList.remove('open');
     });
   });
@@ -888,8 +1518,17 @@ function handlePower(action){
     return;
   }
   if(action==='lock'){
-    renderLoginScreen();
+    renderLoginScreen({mode:'lock', userId:activeUserId});
     document.getElementById('login-screen').style.display='flex';
+    return;
+  }
+  if(action==='signout'){
+    localStorage.removeItem(ACTIVE_USER_KEY);
+    if(supabaseClient && cloudUser){
+      supabaseClient.auth.signOut().finally(()=>location.reload());
+      return;
+    }
+    location.reload();
     return;
   }
   if(action==='sleep'){
@@ -910,7 +1549,7 @@ function handlePower(action){
 /* ---------------------- DESKTOP ICONS + CONTEXT MENU ---------------------- */
 function renderDesktopIcons(){
   const box = document.getElementById('desktop-icons');
-  const icons = ['filemanager','browser','texteditor','calculator','softwarehub','games'];
+  const icons = ['filemanager','browser','texteditor','calculator','codeforge','softwarehub','games','camera'];
   box.innerHTML = icons.map(id=>{
     const m = APP_REGISTRY[id];
     return `<div class="dicon" data-app="${id}"><div class="glyph" style="background:${m.color}33; color:${m.color}">${iconHtml(m.svgKey, m.icon)}</div><div class="lbl">${m.name}</div></div>`;
@@ -930,6 +1569,52 @@ function renderDesktopIcons(){
 document.getElementById('os-root').addEventListener('click', e=>{
   if(!e.target.closest('.dicon')) document.querySelectorAll('.dicon.selected').forEach(x=>x.classList.remove('selected'));
 });
+/* ---------------------- SCREENSHOT ----------------------
+   Uses the browser's real screen-capture API (getDisplayMedia) rather than
+   re-drawing the DOM, because that is the only way to capture the iframe apps
+   (Games, Software Hub apps, Zen Browse, PlayTube) and the live camera. The
+   browser always asks permission first — a page can't screenshot silently. */
+let shotBusy = false;
+async function takeScreenshot(){
+  if(shotBusy) return;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia){
+    notify('Screenshot not supported','This browser cannot capture the screen. Try Chrome or Edge.','⚠️','#ff5c5c'); return;
+  }
+  shotBusy = true;
+  let stream = null;
+  try{
+    ctxMenu.classList.remove('open');
+    stream = await navigator.mediaDevices.getDisplayMedia({video:true, audio:false, preferCurrentTab:true, selfBrowserSurface:'include'});
+    const video = document.createElement('video');
+    video.muted = true; video.playsInline = true; video.srcObject = stream;
+    await video.play();
+    // Wait for a real decoded frame, then a beat so the browser's share prompt has faded out.
+    await new Promise(r=> video.requestVideoFrameCallback ? video.requestVideoFrameCallback(()=>r()) : setTimeout(r,300));
+    await new Promise(r=>setTimeout(r,250));
+    const w = video.videoWidth, h = video.videoHeight;
+    if(!w || !h) throw new Error('The browser returned an empty frame.');
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(video, 0, 0, w, h);
+    stream.getTracks().forEach(t=>t.stop()); stream = null;   // ends the "sharing" indicator immediately
+    const blob = await new Promise(res=>c.toBlob(res, 'image/png'));
+    if(!blob) throw new Error('Could not encode the screenshot.');
+    const node = await savePhotoToPictures(blob, w, h, {prefix:'Screenshot', ext:'png', mime:'image/png'});
+    const fl = document.createElement('div');
+    fl.style.cssText = 'position:fixed;inset:0;background:#fff;opacity:.7;pointer-events:none;z-index:99999;transition:opacity .35s ease-out;';
+    document.body.appendChild(fl); requestAnimationFrame(()=>{ fl.style.opacity = '0'; }); setTimeout(()=>fl.remove(), 450);
+    notify('Screenshot saved', node.name+' was saved to Pictures', '📸', '#4ade80');
+  }catch(err){
+    if(err && (err.name==='NotAllowedError' || err.name==='AbortError')) notify('Screenshot cancelled','Nothing was saved. If you did not cancel, your browser blocked screen capture.','📸','#a7afc0');
+    else notify('Screenshot failed', (err && err.message) || 'Something went wrong.', '⚠️', '#ff5c5c');
+  }finally{
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    shotBusy = false;
+  }
+}
+// PrintScreen only reliably fires keyup on Windows; Ctrl+Alt+S is for keyboards without a PrintScreen key.
+document.addEventListener('keyup', e=>{ if(e.key==='PrintScreen'){ e.preventDefault(); takeScreenshot(); } });
+document.addEventListener('keydown', e=>{ if(e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey && (e.key==='s'||e.key==='S')){ e.preventDefault(); takeScreenshot(); } });
+
 const ctxMenu = document.getElementById('desktop-ctx');
 document.getElementById('os-root').addEventListener('contextmenu', e=>{
   if(e.target.closest('.window')) return;
@@ -939,6 +1624,7 @@ document.getElementById('os-root').addEventListener('contextmenu', e=>{
     <div class="ctx-item" data-a="newfolder">📁 New Folder</div>
     <div class="ctx-item" data-a="newfile">📄 New Text Document</div>
     <div class="ctx-sep"></div>
+    <div class="ctx-item" data-a="screenshot">📸 Take Screenshot <span style="opacity:.5;font-size:9px;">PrtScn</span></div>
     <div class="ctx-item" data-a="wallpaper">🖼️ Change Wallpaper</div>
     <div class="ctx-item" data-a="settings">⚙️ Display Settings</div>
     <div class="ctx-sep"></div>
@@ -946,12 +1632,16 @@ document.getElementById('os-root').addEventListener('contextmenu', e=>{
   `;
   ctxMenu.style.left = e.clientX+'px'; ctxMenu.style.top = e.clientY+'px';
   ctxMenu.classList.add('open');
+  // keep the menu fully on-screen (and clear of the taskbar) when opened near an edge
+  ctxMenu.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - ctxMenu.offsetWidth - 4))+'px';
+  ctxMenu.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - ctxMenu.offsetHeight - 64))+'px';
   ctxMenu.querySelectorAll('.ctx-item').forEach(it=>it.addEventListener('click', ()=>{
     const a = it.dataset.a;
     ctxMenu.classList.remove('open');
     if(a==='refresh') notify('Desktop refreshed','Icons re-arranged','🔄','#4ade80');
     if(a==='newfolder'){ fsAddChild(['root'], {id:uid('f'), name:'New Folder', type:'folder', children:[]}); notify('Folder created','New Folder added to Home','📁','#7c6cff'); }
     if(a==='newfile'){ fsAddChild(['root'], {id:uid('f'), name:'New Document.txt', type:'file', content:''}); notify('File created','New Document.txt added to Home','📄','#ffb35c'); }
+    if(a==='screenshot') setTimeout(takeScreenshot, 150);
     if(a==='wallpaper' || a==='settings') openApp('settings');
     if(a==='about') openApp('settings', {data:{section:'about'}});
   }));
@@ -984,20 +1674,202 @@ function fsRenameNode(pathIds, id, newName){
 function renderAppBody(w){
   const body = document.getElementById('body-'+w.id);
   const renderers = {
-    filemanager: renderFileManager, browser: renderBrowser, texteditor: renderTextEditor,
+    filemanager: renderFileManager, camera: renderCamera, browser: renderBrowser, texteditor: renderTextEditor,
     notes: renderNotes, calculator: renderCalculator, calendar: renderCalendar,
     terminal: renderTerminal, settings: renderSettingsApp, taskmanager: renderTaskManager,
     softwarehub: renderSoftwareHub, youtube: renderYoutube, spotify: renderSpotify, games: renderGames,
-    pixelpaint: renderPixelPaint,
+    pixelpaint: renderPixelPaint, codeforge: renderCodeForge, share: renderShare,
   };
   const fn = renderers[w.appId];
-  if(fn) fn(body, w);
-  else body.innerHTML = `<div class="empty-state"><div class="ic">📦</div><div>${escapeHtml(w.title)}</div><div style="font-size:11.5px;">This app installed successfully via Software Hub.</div></div>`;
+  if(fn) return fn(body, w);
+  const proj = userAppById(w.appId);
+  if(proj) return renderUserApp(body, w, proj);
+  const sw = SOFTWARE_CATALOG.find(s=>s.id===w.appId) || GAME_CATALOG.find(s=>s.id===w.appId);
+  if(sw && sw.url) return renderWebApp(body, w, sw);
+  body.innerHTML = `<div class="empty-state"><div class="ic">📦</div><div>${escapeHtml(w.title)}</div><div style="font-size:11.5px;">This app installed successfully via Software Hub.</div></div>`;
+}
+
+function renderShare(body, w){
+  let channel = null, pc = null, dataChannel = null, role = '', offer = null;
+  let remoteDescriptionReady = false, pendingCandidates = [], receiving = null;
+  const roomCode = ()=>Math.random().toString(36).slice(2,8).toUpperCase();
+  const rtcConfig = {iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
+  body.innerHTML = `<div class="app" style="padding:18px; overflow:auto;">
+    <h3 style="font-family:var(--font-display); margin-bottom:8px;">Share files</h3>
+    <p style="font-size:11px; color:var(--text-2); line-height:1.5; margin-bottom:14px;">Send photos, documents, videos, and other files directly to another browser. File contents do not pass through Supabase.</p>
+    <div id="share-status" class="card" style="margin-bottom:12px;">Choose <b>Send</b> on one device and <b>Receive</b> on the other.</div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+      <button class="btn" id="share-send">Send</button>
+      <button class="btn" id="share-receive">Receive</button>
+    </div>
+    <div id="share-room" style="display:none;"></div>
+    <div id="share-transfer" style="display:none;"></div>
+    <div id="share-downloads"></div>
+  </div>`;
+  const status = body.querySelector('#share-status');
+  const room = body.querySelector('#share-room');
+  const transfer = body.querySelector('#share-transfer');
+  const downloads = body.querySelector('#share-downloads');
+  const setStatus = text=>{ status.innerHTML = text; };
+  const sendSignal = payload=>{ if(channel) channel.send({type:'broadcast', event:'signal', payload}); };
+  const flushCandidates = async()=>{
+    if(!pc || !remoteDescriptionReady) return;
+    for(const candidate of pendingCandidates.splice(0)) await pc.addIceCandidate(candidate).catch(()=>{});
+  };
+  const setupDataChannel = dc=>{
+    dataChannel = dc;
+    dc.binaryType = 'arraybuffer';
+    dc.onopen = ()=>{
+      setStatus('Connected. Select files to send.');
+      transfer.style.display = role==='send' ? 'block' : 'none';
+    };
+    dc.onclose = ()=>setStatus('Connection closed.');
+    dc.onerror = ()=>setStatus('The file connection failed.');
+    dc.onmessage = event=>{
+      if(typeof event.data==='string'){
+        const message = safeJsonParse(event.data, null);
+        if(!message) return;
+        if(message.type==='file') receiving = {name:message.name, size:message.size, mime:message.mime, chunks:[], received:0};
+        if(message.type==='done' && receiving){
+          const blob = new Blob(receiving.chunks, {type:receiving.mime||'application/octet-stream'});
+          const url = URL.createObjectURL(blob);
+          downloads.insertAdjacentHTML('beforeend', `<div class="card" style="margin-top:10px;"><b>${escapeHtml(receiving.name)}</b><div style="font-size:10.5px; color:var(--text-2); margin:5px 0 8px;">${(receiving.size/1024).toFixed(1)} KB received</div><a class="btn" href="${url}" download="${escapeHtml(receiving.name)}">Download</a></div>`);
+          receiving = null;
+          setStatus('File received successfully.');
+        }
+      } else if(receiving){
+        receiving.chunks.push(event.data);
+        receiving.received += event.data.byteLength || event.data.size || 0;
+        setStatus(`Receiving ${escapeHtml(receiving.name)}… ${Math.min(100, Math.round(receiving.received / receiving.size * 100))}%`);
+      }
+    };
+  };
+  const createPeer = isHost=>{
+    pc = new RTCPeerConnection(rtcConfig);
+    pc.onicecandidate = event=>{ if(event.candidate) sendSignal({type:'candidate', candidate:event.candidate}); };
+    pc.onconnectionstatechange = ()=>{
+      if(['failed','disconnected','closed'].includes(pc.connectionState)) setStatus('Connection lost.');
+    };
+    if(isHost) setupDataChannel(pc.createDataChannel('files'));
+    else pc.ondatachannel = event=>setupDataChannel(event.channel);
+  };
+  const openChannel = async code=>{
+    if(!supabaseClient){ setStatus('Cloud signaling is not configured. Add Supabase settings before using Share.'); return false; }
+    channel = supabaseClient.channel(`zenos-share-${code}`, {config:{broadcast:{ack:true, self:false}}});
+    channel.on('broadcast', {event:'signal'}, async ({payload})=>{
+      if(!payload || !pc) return;
+      if(payload.type==='hello' && role==='send' && offer) sendSignal({type:'offer', offer});
+      if(payload.type==='offer' && role==='receive'){
+        await pc.setRemoteDescription(payload.offer);
+        remoteDescriptionReady = true;
+        await flushCandidates();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendSignal({type:'answer', answer});
+      }
+      if(payload.type==='answer' && role==='send'){
+        await pc.setRemoteDescription(payload.answer);
+        remoteDescriptionReady = true;
+        await flushCandidates();
+      }
+      if(payload.type==='candidate'){
+        if(remoteDescriptionReady) await pc.addIceCandidate(payload.candidate).catch(()=>{});
+        else pendingCandidates.push(payload.candidate);
+      }
+    });
+    return new Promise(resolve=>channel.subscribe(async state=>{
+      if(state!=='SUBSCRIBED'){ setStatus('Could not open the sharing room.'); resolve(false); return; }
+      resolve(true);
+    }));
+  };
+  const sendFile = async file=>{
+    if(!dataChannel || dataChannel.readyState!=='open') return;
+    dataChannel.send(JSON.stringify({type:'file', name:file.name, size:file.size, mime:file.type}));
+    const chunkSize = 16384;
+    for(let offset=0; offset<file.size; offset+=chunkSize){
+      while(dataChannel.bufferedAmount > 1024*1024) await new Promise(resolve=>setTimeout(resolve, 20));
+      dataChannel.send(await file.slice(offset, offset+chunkSize).arrayBuffer());
+      setStatus(`Sending ${escapeHtml(file.name)}… ${Math.min(100, Math.round((offset+chunkSize) / file.size * 100))}%`);
+    }
+    dataChannel.send(JSON.stringify({type:'done'}));
+    setStatus('File sent successfully.');
+  };
+  body.querySelector('#share-send').addEventListener('click', async()=>{
+    role = 'send';
+    const code = roomCode();
+    room.style.display = 'block';
+    room.innerHTML = `<div class="card"><b>Room code</b><div style="font-size:26px; letter-spacing:5px; margin:10px 0; color:var(--accent-1);">${code}</div><div style="font-size:10.5px; color:var(--text-2);">Enter this code on the receiving device.</div></div>`;
+    transfer.innerHTML = `<div class="card" style="margin-top:12px;"><input id="share-files" type="file" multiple><button class="btn" id="share-send-files" style="margin-top:10px;">Send selected files</button></div>`;
+    const ready = await openChannel(code);
+    if(!ready) return;
+    createPeer(true);
+    const description = await pc.createOffer();
+    await pc.setLocalDescription(description);
+    offer = description;
+    sendSignal({type:'offer', offer});
+    setStatus('Waiting for the receiving device…');
+    transfer.style.display = 'block';
+    body.querySelector('#share-send-files').addEventListener('click', async()=>{
+      const files = Array.from(body.querySelector('#share-files').files||[]);
+      for(const file of files) await sendFile(file);
+    });
+  });
+  body.querySelector('#share-receive').addEventListener('click', async()=>{
+    role = 'receive';
+    const code = prompt('Enter the room code from the sending device:');
+    if(!code) return;
+    room.style.display = 'block';
+    room.innerHTML = `<div class="card"><b>Room</b><div style="font-size:20px; letter-spacing:3px; margin-top:8px; color:var(--accent-1);">${escapeHtml(code.trim().toUpperCase())}</div></div>`;
+    const ready = await openChannel(code.trim().toUpperCase());
+    if(!ready) return;
+    createPeer(false);
+    sendSignal({type:'hello'});
+    setStatus('Waiting for the sending device…');
+  });
+}
+
+/* ---- Installed Software-Hub web apps ----
+   Renders the app fully in its own window — a real, live iframe filling the
+   whole window, no address bar or tabs — so it behaves like a standalone
+   installed app rather than a browser tab. The window persists via
+   state.installedApps (localStorage), so once installed it stays in the
+   launcher, Start Menu, and Software Hub's "Installed" tab across reloads,
+   exactly like every other installed app here. */
+function renderWebApp(body, w, sw){
+  const inst = winInstances[w.id];
+  body.innerHTML = `<div class="app" style="padding:0;">
+    <div class="app-body" id="wa-body-${w.id}" style="flex:1; padding:0; position:relative; overflow:hidden; display:flex;"></div>
+  </div>`;
+  const host = body.querySelector(`#wa-body-${w.id}`);
+  function drawFrame(){
+    if(inst.blocked){
+      host.innerHTML = `<div style="flex:1; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px;">
+        <div>
+          <div style="font-size:30px; margin-bottom:10px;">${sw.icon}</div>
+          <div style="font-weight:600; margin-bottom:6px;">${escapeHtml(sw.name)} can't load right now</div>
+          <div style="font-size:11.5px; color:var(--text-2); max-width:320px; margin:0 auto;">This app's site refused to run inside another page. Nothing else in Zen OS is affected — try again later.</div>
+          <button class="btn primary" id="wa-retry-${w.id}" style="margin-top:14px;">Retry</button>
+        </div>
+      </div>`;
+      const retry = host.querySelector(`#wa-retry-${w.id}`);
+      if(retry) retry.addEventListener('click', ()=>{ inst.blocked=false; drawFrame(); });
+      return;
+    }
+    host.innerHTML = `<iframe src="${escapeHtml(sw.url)}" style="width:100%; height:100%; border:0; display:block; flex:1;" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"></iframe>`;
+    const frame = host.querySelector('iframe');
+    frame.addEventListener('error', ()=>{ inst.blocked = true; drawFrame(); });
+  }
+  drawFrame();
 }
 
 /* ---- FILE MANAGER ---- */
 function renderFileManager(body, w){
   const inst = winInstances[w.id]; inst.cwd = inst.cwd || ['root']; inst.view = inst.view || 'grid'; inst.sort = inst.sort || 'name';
+  const onFsChanged = ()=>{
+    if(!document.body.contains(body)){ document.removeEventListener('zenfs:changed', onFsChanged); return; }
+    try{ draw(); }catch(e){}
+  };
+  document.addEventListener('zenfs:changed', onFsChanged);
   function pathForIds(ids){
     let node = state.fs; const names = [];
     for(let i=1;i<ids.length;i++){
@@ -1026,14 +1898,14 @@ function renderFileManager(body, w){
   function previewImage(file){
     const modal = document.createElement('div');
     modal.style.cssText='position:absolute; inset:0; background:rgba(0,0,0,.72); display:flex; align-items:center; justify-content:center; z-index:50;';
-    modal.innerHTML=`<div class="card" style="max-width:82%;max-height:88%;background:var(--panel-strong);display:flex;flex-direction:column;gap:10px;align-items:center;"><img src="${escapeHtml(file.assetPath)}" alt="${escapeHtml(file.name)}" style="max-width:100%;max-height:62vh;object-fit:contain;image-rendering:pixelated;"><div style="font-size:11px;color:var(--text-2);">${escapeHtml(file.name)} · ${escapeHtml(file.permissions||'')}</div><button class="pill" id="fm-preview-close">Close</button></div>`;
+    modal.innerHTML=`<div class="card" style="max-width:82%;max-height:88%;background:var(--panel-strong);display:flex;flex-direction:column;gap:10px;align-items:center;"><img src="${escapeHtml(file.assetPath)}" alt="${escapeHtml(file.name)}" style="max-width:100%;max-height:62vh;object-fit:contain;image-rendering:${file.mime==='image/gif'?'pixelated':'auto'};"><div style="font-size:11px;color:var(--text-2);">${escapeHtml(file.name)} · ${escapeHtml(file.permissions||'')}</div><button class="pill" id="fm-preview-close">Close</button></div>`;
     body.appendChild(modal);
     modal.querySelector('#fm-preview-close').addEventListener('click', ()=>modal.remove());
     modal.addEventListener('click', event=>{ if(event.target===modal) modal.remove(); });
   }
   function iconFor(item, size){
     return item.type==='image' && item.assetPath
-      ? `<img src="${escapeHtml(item.assetPath)}" alt="" style="width:${size||42}px;height:${size||42}px;object-fit:cover;image-rendering:pixelated;border:var(--pixel) solid #000;">`
+      ? `<img src="${escapeHtml(item.assetPath)}" alt="" style="width:${size||42}px;height:${size||42}px;object-fit:cover;image-rendering:${item.mime==='image/gif'?'pixelated':'auto'};border:var(--pixel) solid #000;">`
       : item.type==='folder' ? '📁' : '📄';
   }
   function draw(){
@@ -1427,6 +2299,207 @@ function renderPixelPaint(body, w){
   ro.observe(canvas);
 }
 
+/* =====================================================================
+   CODEFORGE  — a real in-OS code IDE + a small app SDK
+   ---------------------------------------------------------------------
+   Edit HTML/CSS/JS with line numbers and regex syntax highlighting, run
+   it live in a sandboxed iframe, and read real console output/errors
+   piped back from the sandbox. Projects persist per-user in state, and
+   any project can be "installed" as a genuine launchable Zen OS app
+   (renderUserApp) that shows up in the Start Menu, launcher, command
+   palette and Settings just like every other app.
+===================================================================== */
+function escapeHtml2(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Highlighter rules use ONLY non-capturing groups so group indices line up
+// one-to-one with the rule list.
+const CF_HL = {
+  js: [
+    {type:'comment', re:"//[^\\n]*|/\\*[\\s\\S]*?\\*/"},
+    {type:'string', re:"\"[^\"]*\"|'[^']*'|`[^`]*`"},
+    {type:'keyword', re:"\\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|super|this|typeof|instanceof|in|of|null|undefined|true|false|async|await|try|catch|finally|throw|import|export|from|default|yield|delete|void)\\b"},
+    {type:'number', re:"\\b0x[0-9a-fA-F]+\\b|\\b\\d+(?:\\.\\d+)?\\b"},
+  ],
+  css: [
+    {type:'comment', re:"/\\*[\\s\\S]*?\\*/"},
+    {type:'string', re:"\"[^\"]*\"|'[^']*'"},
+    {type:'keyword', re:"@[\\w-]+"},
+    {type:'number', re:"#[0-9a-fA-F]{3,8}\\b|\\b\\d+(?:\\.\\d+)?(?:px|em|rem|%|vh|vw|vmin|vmax|s|ms|deg|fr|pt)?\\b"},
+  ],
+  html: [
+    {type:'comment', re:"<!--[\\s\\S]*?-->"},
+    {type:'string', re:"\"[^\"]*\"|'[^']*'"},
+    {type:'keyword', re:"</?[a-zA-Z][a-zA-Z0-9-]*|/?>"},
+  ],
+};
+function cfBuildHighlighter(lang){
+  const rules = CF_HL[lang] || [];
+  if(!rules.length) return src=>escapeHtml2(src);
+  const combined = new RegExp(rules.map(r=>'(' + r.re + ')').join('|'), 'g');
+  return function(src){
+    let out=''; let last=0; let m; combined.lastIndex=0;
+    while((m = combined.exec(src))){
+      if(m[0]===''){ combined.lastIndex++; continue; }
+      out += escapeHtml2(src.slice(last, m.index));
+      let gi=1; for(; gi<=rules.length; gi++){ if(m[gi]!=null) break; }
+      out += '<span class="cf-t-' + rules[gi-1].type + '">' + escapeHtml2(m[0]) + '</span>';
+      last = m.index + m[0].length;
+    }
+    out += escapeHtml2(src.slice(last));
+    return out;
+  };
+}
+const CF_STARTER = {
+  html: '<h1>Hello, Zen OS 👋</h1>\n<p>Edit HTML, CSS and JS — then hit Run.</p>\n<button id="go">Click me</button>\n<p id="out"></p>',
+  css: 'body{font-family:system-ui,sans-serif;background:#0f1117;color:#e8e8f0;padding:24px;}\nh1{color:#5cc8ff;}\nbutton{background:#5cc8ff;border:0;padding:8px 14px;cursor:pointer;color:#0a0c12;}',
+  js: "var n=0;\ndocument.getElementById('go').addEventListener('click',function(){\n  n++;\n  document.getElementById('out').textContent='Clicked '+n+' time(s)';\n  console.log('clicked', n);\n});",
+};
+function cfNewProject(name){
+  return { id:'proj_'+Math.random().toString(36).slice(2,9), name:name||'Untitled Project', icon:'⚡', color:'#5cc8ff', html:CF_STARTER.html, css:CF_STARTER.css, js:CF_STARTER.js, installed:false, updated:Date.now() };
+}
+function cfComposeDoc(proj){
+  // Console bridge: the sandbox posts log/error messages back to the parent.
+  const bridge = "<script>(function(){function send(t,a){try{parent.postMessage({__cf:true,type:t,text:Array.prototype.slice.call(a).map(function(x){try{return typeof x==='object'?JSON.stringify(x):String(x);}catch(e){return String(x);}}).join(' ')},'*');}catch(e){}}['log','error','warn','info'].forEach(function(k){var o=console[k];console[k]=function(){send(k,arguments);if(o)o.apply(console,arguments);};});window.addEventListener('error',function(e){send('error',[e.message+' (line '+e.lineno+')']);});window.addEventListener('unhandledrejection',function(e){send('error',['Unhandled promise rejection: '+e.reason]);});})();</script>";
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'+(proj.css||'')+'</style></head><body>'+(proj.html||'')+bridge+'<script>'+(proj.js||'')+'</script></body></html>';
+}
+
+function renderCodeForge(body, w){
+  const inst = winInstances[w.id];
+  state.codeProjects = state.codeProjects || [];
+  if(!state.codeProjects.length) state.codeProjects.push(cfNewProject('My First App'));
+  inst.projectId = inst.projectId || state.codeProjects[0].id;
+  inst.lang = inst.lang || 'html';
+  inst.showConsole = inst.showConsole != null ? inst.showConsole : true;
+  inst.consoleLines = inst.consoleLines || [];
+  function project(){ return state.codeProjects.find(p=>p.id===inst.projectId) || state.codeProjects[0]; }
+
+  // Console bridge listener — scoped to THIS window's iframe, cleaned up on close.
+  if(!inst.cfMsgBound){
+    inst.cfMsgBound = true;
+    inst.cfMsgHandler = function(ev){
+      const f = body.querySelector('#cf-preview');
+      if(!ev.data || !ev.data.__cf || !f || ev.source !== f.contentWindow) return;
+      inst.consoleLines.push({type:ev.data.type, text:ev.data.text});
+      if(inst.consoleLines.length > 200) inst.consoleLines.shift();
+      paintConsole();
+    };
+    window.addEventListener('message', inst.cfMsgHandler);
+    const prevCleanup = inst.cleanup;
+    inst.cleanup = function(){ try{ window.removeEventListener('message', inst.cfMsgHandler); }catch(e){} if(typeof prevCleanup==='function') prevCleanup(); };
+  }
+
+  function draw(){
+    const p = project();
+    body.innerHTML = `
+      <div class="app cf-app">
+        <div class="app-toolbar cf-bar">
+          <select id="cf-project" class="cf-select" title="Open project">
+            ${state.codeProjects.map(pr=>`<option value="${pr.id}" ${pr.id===inst.projectId?'selected':''}>${escapeHtml(pr.name)}${pr.installed?' ✓':''}</option>`).join('')}
+          </select>
+          <button class="pill" id="cf-new" title="New project">+ New</button>
+          <input id="cf-name" class="cf-name" value="${escapeHtml(p.name)}" title="Project name">
+          <div class="cf-langs">
+            ${['html','css','js'].map(l=>`<button class="cf-lang ${inst.lang===l?'active':''}" data-lang="${l}">${l.toUpperCase()}</button>`).join('')}
+          </div>
+          <div style="flex:1;"></div>
+          <button class="btn primary" id="cf-run">▶ Run</button>
+          <button class="pill" id="cf-console-toggle" title="Toggle console">🖥️</button>
+          <button class="pill" id="cf-export" title="Download index.html">⬇️</button>
+          <button class="pill" id="cf-install" title="Install as a Zen OS app">${p.installed?'✓ Installed':'📦 Install'}</button>
+        </div>
+        <div class="cf-main">
+          <div class="cf-editor">
+            <div class="cf-gutter" id="cf-gutter"></div>
+            <div class="cf-code-wrap">
+              <pre class="cf-highlight" id="cf-highlight" aria-hidden="true"><code></code></pre>
+              <textarea class="cf-code" id="cf-code" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+            </div>
+          </div>
+          <div class="cf-preview-pane">
+            <div class="cf-preview-head">Preview</div>
+            <iframe id="cf-preview" class="cf-preview" sandbox="allow-scripts allow-modals" title="Preview"></iframe>
+            <div class="cf-console ${inst.showConsole?'':'cf-hidden'}" id="cf-console-pane">
+              <div class="cf-console-head">Console <button class="cf-console-clear" id="cf-console-clear">clear</button></div>
+              <div class="cf-console-body" id="cf-console-body"></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    const ta = body.querySelector('#cf-code');
+    ta.value = p[inst.lang] || '';
+    const highlight = cfBuildHighlighter(inst.lang);
+    const hl = body.querySelector('#cf-highlight').firstChild;
+    const gutter = body.querySelector('#cf-gutter');
+    function refresh(){
+      hl.innerHTML = highlight(ta.value) + '\n';
+      const lines = ta.value.split('\n').length;
+      let g=''; for(let i=1;i<=lines;i++) g+=i+'\n';
+      gutter.textContent = g;
+    }
+    function syncScroll(){
+      const pre = body.querySelector('#cf-highlight');
+      pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft;
+      gutter.scrollTop = ta.scrollTop;
+    }
+    refresh();
+    ta.addEventListener('input', ()=>{ p[inst.lang] = ta.value; p.updated = Date.now(); refresh(); scheduleSave(); });
+    ta.addEventListener('scroll', syncScroll);
+    ta.addEventListener('keydown', e=>{
+      if(e.key==='Tab'){ e.preventDefault(); const s=ta.selectionStart, en=ta.selectionEnd; ta.value=ta.value.slice(0,s)+'  '+ta.value.slice(en); ta.selectionStart=ta.selectionEnd=s+2; p[inst.lang]=ta.value; refresh(); scheduleSave(); }
+    });
+
+    body.querySelectorAll('[data-lang]').forEach(el=>el.addEventListener('click', ()=>{ p[inst.lang]=ta.value; inst.lang=el.dataset.lang; draw(); }));
+    body.querySelector('#cf-project').addEventListener('change', e=>{ const cur=project(); cur[inst.lang]=ta.value; inst.projectId=e.target.value; draw(); });
+    body.querySelector('#cf-new').addEventListener('click', ()=>{ const np=cfNewProject('Untitled '+(state.codeProjects.length+1)); state.codeProjects.push(np); inst.projectId=np.id; inst.lang='html'; saveState(); draw(); });
+    body.querySelector('#cf-name').addEventListener('input', e=>{ p.name=e.target.value; scheduleSave(); refreshLaunchers(); });
+    body.querySelector('#cf-run').addEventListener('click', run);
+    body.querySelector('#cf-export').addEventListener('click', ()=>{
+      const blob = new Blob([cfComposeDoc(p)], {type:'text/html'});
+      const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=(p.name||'app').replace(/[^\w-]+/g,'_')+'.html';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href);
+    });
+    body.querySelector('#cf-console-toggle').addEventListener('click', ()=>{ inst.showConsole=!inst.showConsole; body.querySelector('#cf-console-pane').classList.toggle('cf-hidden', !inst.showConsole); });
+    body.querySelector('#cf-console-clear').addEventListener('click', ()=>{ inst.consoleLines=[]; paintConsole(); });
+    body.querySelector('#cf-install').addEventListener('click', ()=>{
+      p.installed = !p.installed; saveState(); refreshLaunchers(); draw();
+      notify('CodeForge', p.installed ? `“${p.name}” is now installed as an app` : `“${p.name}” was uninstalled`, '⚡', '#5cc8ff');
+    });
+
+    paintConsole();
+    run();
+  }
+
+  function run(){
+    const p = project();
+    inst.consoleLines = [];
+    const f = body.querySelector('#cf-preview');
+    if(f){ f.srcdoc = cfComposeDoc(p); }
+    paintConsole();
+  }
+  function paintConsole(){
+    const cb = body.querySelector('#cf-console-body'); if(!cb) return;
+    cb.innerHTML = inst.consoleLines.length
+      ? inst.consoleLines.map(l=>`<div class="cf-cl cf-cl-${l.type}">${escapeHtml(l.text)}</div>`).join('')
+      : `<div class="cf-cl cf-cl-muted">No console output yet.</div>`;
+    cb.scrollTop = cb.scrollHeight;
+  }
+  function refreshLaunchers(){ renderTaskbarApps(); renderDesktopIcons(); if(document.getElementById('start-menu').classList.contains('open')) renderStartMenu(); }
+  let saveTimer=null;
+  function scheduleSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveState, 400); }
+
+  draw();
+}
+
+/* ---- Installed CodeForge apps ----
+   A project the user built and “installed” runs here as a first-class app:
+   its HTML/CSS/JS fills the window inside a sandboxed iframe, no browser
+   chrome, launched from the Start Menu / desktop / command palette. */
+function renderUserApp(body, w, proj){
+  body.innerHTML = `<div class="app" style="padding:0;"><iframe class="cf-userapp-frame" sandbox="allow-scripts allow-modals allow-forms allow-popups" title="${escapeHtml(proj.name)}"></iframe></div>`;
+  const f = body.querySelector('.cf-userapp-frame');
+  f.srcdoc = cfComposeDoc(proj);
+}
+
 /* ---- CALENDAR ---- */
 function renderCalendar(body, w){
   const inst = winInstances[w.id]; const today = new Date();
@@ -1501,61 +2574,112 @@ function renderCalendar(body, w){
   draw();
 }
 
-/* ---- TERMINAL ---- */
+/* ---- TERMINAL ----
+   Wired to the real ZenShell/ZenKernel: a single persistent shell context per
+   window carries cwd, command history and background jobs across commands, so
+   `cd` actually sticks, the prompt reflects the true working directory, and
+   long-running commands (e.g. `sleep`) run through executeAsync and can be
+   interrupted with Ctrl+C. */
+const TERM_COMMANDS = ['help','clear','cls','pwd','cd','ls','cat','touch','mkdir','rm','cp','mv','find','grep','echo','whoami','ps','kill','top','free','df','chmod','chown','history','alias','env','export','uname','uptime','date','jobs','fg','bg','sleep','zen'];
 function renderTerminal(body, w){
   const inst = winInstances[w.id];
-  inst.term = inst.term || { cwd:['root'], history:[], lines:['Zen Terminal — type "help" to get started.'] };
-  function path(){ return inst.term.cwd.map(id=>fsFindNode(inst.term.cwd.slice(0,inst.term.cwd.indexOf(id)+1))?.name||'').join('/') || '/'; }
-  function pwdStr(){ return '/' + inst.term.cwd.slice(1).map((id,i)=>fsFindNode(inst.term.cwd.slice(0,i+2)).name).join('/'); }
+  const hasShell = !!(window.ZenShell && window.ZenKernel);
+  inst.term = inst.term || {
+    ctx: { pid: w.pid, cwd: '/', history: [], jobs: [] },
+    lines: [{t:'Zen Terminal — type "help" to get started.', cls:'sys'}],
+    histIndex: -1,
+    draft: '',
+    busy: false,
+  };
+  const term = inst.term;
+  function prompt(){ return (state.settings.username || 'guest') + '@zenos:' + (term.ctx.cwd || '/') + ' $'; }
+  function pushLine(text, cls){ String(text==null?'':text).split('\n').forEach(l=>term.lines.push({t:l, cls:cls||''})); }
+
   function draw(){
-    body.innerHTML = `<div style="height:100%; background:#0b0d12; padding:14px; font-family:var(--font-mono); font-size:12.5px; overflow-y:auto;" id="term-out">
-      ${inst.term.lines.map(l=>`<div style="white-space:pre-wrap; margin-bottom:2px; color:${l.startsWith('$')?'var(--accent-2)':(l.startsWith('Error')?'var(--danger)':'var(--text-1)')}">${escapeHtml(l)}</div>`).join('')}
-      <div style="display:flex; align-items:center; gap:6px;"><span style="color:var(--accent-2);">${pwdStr()} $</span><input id="term-in" style="flex:1; font-family:var(--font-mono); font-size:12.5px; background:none; color:var(--text-1);" autocomplete="off"></div>
+    body.innerHTML = `<div class="zt-screen" id="term-out">
+      ${term.lines.map(l=>`<div class="zt-line zt-${l.cls||'out'}">${escapeHtml(l.t)||'&nbsp;'}</div>`).join('')}
+      ${term.busy ? `<div class="zt-line zt-sys">…running (Ctrl+C to interrupt)</div>` : `<div class="zt-input-row"><span class="zt-prompt">${escapeHtml(prompt())}</span><input id="term-in" class="zt-input" autocomplete="off" spellcheck="false"></div>`}
     </div>`;
     const out = body.querySelector('#term-out');
-    const inp = body.querySelector('#term-in');
-    inp.focus();
     out.scrollTop = out.scrollHeight;
+    out.addEventListener('click', ()=>{ const i = body.querySelector('#term-in'); if(i) i.focus(); });
+    const inp = body.querySelector('#term-in');
+    if(!inp) return;
+    inp.value = term.draft || '';
+    inp.focus();
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+    inp.addEventListener('input', ()=>{ term.draft = inp.value; });
     inp.addEventListener('keydown', e=>{
-      if(e.key==='Enter'){
-        const cmd = inp.value; inp.value='';
-        runCmd(cmd);
-      }
+      if(e.key==='Enter'){ e.preventDefault(); const cmd = inp.value; term.draft=''; runCmd(cmd); }
+      else if(e.key==='ArrowUp'){ e.preventDefault(); navHistory(-1, inp); }
+      else if(e.key==='ArrowDown'){ e.preventDefault(); navHistory(1, inp); }
+      else if(e.key==='Tab'){ e.preventDefault(); tryComplete(inp); }
+      else if((e.key==='c'||e.key==='C') && e.ctrlKey){ e.preventDefault(); onInterrupt(inp); }
+      else if((e.key==='l'||e.key==='L') && e.ctrlKey){ e.preventDefault(); term.lines=[]; draw(); }
     });
-    body.addEventListener('click', ()=>inp.focus());
   }
-  function runCmd(raw){
-    if(window.ZenShell && window.ZenKernel){
-      const process = ZenKernel.process.get(w.pid);
-      const result = ZenShell.execute(raw, {pid:w.pid, cwd:'/', history:inst.term.history});
-      inst.term.history.push(raw);
-      inst.term.lines.push(`${pwdStr()} $ ${raw}`);
-      if(result.output) inst.term.lines.push(result.output);
+
+  function navHistory(dir, inp){
+    const h = term.ctx.history; if(!h.length) return;
+    if(term.histIndex === -1) term.histIndex = h.length;
+    term.histIndex = Math.max(0, Math.min(h.length, term.histIndex + dir));
+    inp.value = term.histIndex >= h.length ? '' : h[term.histIndex];
+    term.draft = inp.value;
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+  }
+
+  function tryComplete(inp){
+    const val = inp.value;
+    const parts = val.split(/(\s+)/); // keep whitespace tokens
+    const frag = parts[parts.length-1] || '';
+    const isCommand = val.trim() === frag.trim() && !/\s/.test(val.trimStart());
+    let candidates = [];
+    if(isCommand){
+      candidates = TERM_COMMANDS.filter(c=>c.startsWith(frag));
+    } else if(hasShell){
+      try{
+        const base = frag.includes('/') ? frag.slice(0, frag.lastIndexOf('/')+1) : '';
+        const tail = frag.includes('/') ? frag.slice(frag.lastIndexOf('/')+1) : frag;
+        const dirPath = ZenKernel.fs.normalize(base || '.', term.ctx.cwd || '/');
+        candidates = ZenKernel.fs.readdir(dirPath)
+          .filter(f=>f.name.startsWith(tail))
+          .map(f=>base + f.name + (f.type==='folder'?'/':''));
+      }catch(err){ candidates = []; }
+    }
+    if(candidates.length === 1){
+      parts[parts.length-1] = candidates[0];
+      inp.value = parts.join(''); term.draft = inp.value;
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    } else if(candidates.length > 1){
+      pushLine(prompt() + ' ' + val, 'cmd');
+      pushLine(candidates.map(c=>c.split('/').pop()||c).join('  '), 'out');
       draw();
-      return;
     }
-    const parts = raw.trim().split(/\s+/); const cmd = parts[0]; const args = parts.slice(1);
-    inst.term.lines.push(`${pwdStr()} $ ${raw}`);
-    const node = fsFindNode(inst.term.cwd);
-    if(!cmd){ /* noop */ }
-    else if(cmd==='help'){ inst.term.lines.push('Commands: help, clear, ls, cd, pwd, echo, mkdir, touch, cat, date, whoami'); }
-    else if(cmd==='clear'){ inst.term.lines = []; }
-    else if(cmd==='pwd'){ inst.term.lines.push(pwdStr()); }
-    else if(cmd==='date'){ inst.term.lines.push(new Date().toString()); }
-    else if(cmd==='whoami'){ inst.term.lines.push(state.settings.username); }
-    else if(cmd==='ls'){ inst.term.lines.push((node.children||[]).map(c=>c.type==='folder'?c.name+'/':c.name).join('  ') || '(empty)'); }
-    else if(cmd==='echo'){ inst.term.lines.push(args.join(' ')); }
-    else if(cmd==='cd'){
-      if(!args[0] || args[0]==='~'){ inst.term.cwd=['root']; }
-      else if(args[0]==='..'){ if(inst.term.cwd.length>1) inst.term.cwd.pop(); }
-      else{ const target=(node.children||[]).find(c=>c.type==='folder' && c.name===args[0]); if(target) inst.term.cwd.push(target.id); else inst.term.lines.push('Error: no such directory: '+args[0]); }
-    }
-    else if(cmd==='mkdir'){ if(args[0]){ fsAddChild(inst.term.cwd, {id:uid('f'), name:args[0], type:'folder', children:[]}); } else inst.term.lines.push('Error: mkdir requires a name'); }
-    else if(cmd==='touch'){ if(args[0]){ fsAddChild(inst.term.cwd, {id:uid('f'), name:args[0], type:'file', content:''}); } else inst.term.lines.push('Error: touch requires a name'); }
-    else if(cmd==='cat'){ const f=(node.children||[]).find(c=>c.type==='file'&&c.name===args[0]); inst.term.lines.push(f? (f.content||'(empty file)') : 'Error: file not found'); }
-    else { inst.term.lines.push(`Error: command not found: ${cmd}`); }
-    draw();
   }
+
+  function onInterrupt(inp){
+    pushLine(prompt() + ' ' + (inp?inp.value:'') + '^C', 'cmd');
+    if(hasShell){ try{ ZenShell.interrupt(term.ctx); }catch(err){} }
+    term.draft=''; term.busy=false; draw();
+  }
+
+  async function runCmd(raw){
+    const cmd = raw.trim();
+    term.histIndex = -1;
+    pushLine(prompt() + ' ' + raw, 'cmd');
+    if(!cmd){ draw(); return; }
+    if(cmd === 'clear' || cmd === 'cls'){ term.lines = []; draw(); return; }
+    if(!hasShell){ pushLine('Error: shell/kernel unavailable', 'err'); draw(); return; }
+    term.busy = true; draw();
+    try{
+      const result = await ZenShell.executeAsync(raw, term.ctx);
+      if(result.output) pushLine(result.output, result.status===0 ? 'out' : 'err');
+    }catch(err){
+      pushLine('Error: ' + (err && err.message ? err.message : err), 'err');
+    }
+    term.busy = false; draw();
+  }
+
   draw();
 }
 
@@ -1633,16 +2757,23 @@ function renderSettingsApp(body, w){
       const used = new Blob([JSON.stringify(state)]).size;
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">Storage</h3>
         <div class="card"><div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:8px;"><span>Local storage used</span><b>${(used/1024).toFixed(1)} KB</b></div><div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, used/2000)}%;"></div></div></div>
+        <div class="card" style="margin-top:14px;"><b style="font-size:12.5px;">Backup</b><p style="font-size:10.5px; color:var(--text-2); line-height:1.5; margin:8px 0 12px;">Download a copy of your Zen OS profile or restore one from a JSON backup.</p><div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn" id="set-export-profile">Download backup</button><button class="btn" id="set-import-profile">Import backup</button><input id="set-import-profile-file" type="file" accept="application/json,.json" style="display:none;"></div></div>
         <button class="btn" id="set-reset" style="margin-top:14px; color:var(--danger);">⚠️ Reset Zen OS</button>`;
     } else if(inst.section==='apps'){
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">Installed Apps (${state.installedApps.length + Object.keys(APP_REGISTRY).length})</h3>
-        ${allAppIds().map(id=>{ const m=appMeta(id); return row(`${iconHtml(m.svgKey, m.icon)} ${m.name}`, APP_REGISTRY[id]?.system?'<span style="font-size:11px;color:var(--text-3);">System</span>':`<button class="pill" data-uninstall="${id}">Uninstall</button>`); }).join('')}`;
+        ${allAppIds().map(id=>{ const m=appMeta(id); return row(`${iconHtml(m.svgKey, m.icon, m.favicon)} ${escapeHtml(m.name)}`, APP_REGISTRY[id]?.system?'<span style="font-size:11px;color:var(--text-3);">System</span>':`<button class="pill" data-uninstall="${id}">Uninstall</button>`); }).join('')}`;
     } else if(inst.section==='system'){
+      const me = currentUser();
+      const users = loadUsers();
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">System</h3>
-        ${row('OS Version', '<span style="font-size:12px; color:var(--text-2);">Zen OS 1.0 — Frontend Edition</span>')}
+        ${row('OS Version', '<span style="font-size:12px; color:var(--text-2);">Zen OS 1.8.1 — Frontend Edition</span>')}
+        ${row('Signed in as', `<span style="font-size:12px; color:var(--text-2);">${escapeHtml(me?me.username:state.settings.username)} · ${me&&me.role==='admin'?'Administrator':'Standard'}</span>`)}
         ${row('Uptime', `<span style="font-size:12px; color:var(--text-2);">${Math.floor((ZenKernel.snapshot().uptime||0)/1000)}s (kernel session)</span>`)}
         ${row('Devices', `<span style="font-size:12px; color:var(--text-2);">${ZenKernel.devices.list().length} registered</span>`)}
-        ${row('Services', `<span style="font-size:12px; color:var(--text-2);">${ZenKernel.services.list().length} loaded</span>`)}`;
+        ${row('Services', `<span style="font-size:12px; color:var(--text-2);">${ZenKernel.services.list().length} loaded</span>`)}
+        <h3 style="font-family:var(--font-display); margin:18px 0 10px;">Accounts</h3>
+        ${isAdmin() ? `<p style="font-size:10.5px; color:var(--text-2); margin-bottom:10px;">Each account has its own isolated files, notes, apps and settings.</p>` : `<p style="font-size:10.5px; color:var(--text-3); margin-bottom:10px;">Only an administrator can manage other accounts.</p>`}
+        <div class="card">${users.map(u=>`<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--panel-border);"><span style="font-size:18px;">${u.avatar||'🧑'}</span><span style="flex:1;"><b style="font-size:12px;">${escapeHtml(u.username)}</b><div style="font-size:10px; color:var(--text-3);">${u.role==='admin'?'Administrator':'Standard'}${u.id===activeUserId?' · this account':''}${u.passHash?' · 🔒':''}</div></span>${isAdmin() && u.id!==activeUserId ? `<button class="pill" data-remove-user="${u.id}">Remove</button>` : ''}</div>`).join('')}</div>`;
     } else if(inst.section==='kernel'){
       const snapshot = ZenKernel.snapshot();
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">Kernel Debug Console</h3>
@@ -1655,11 +2786,22 @@ function renderSettingsApp(body, w){
       html = `<div style="text-align:center; padding:20px;">
         <div style="font-size:44px; margin-bottom:10px;">🌸</div>
         <h2 style="font-family:var(--font-display);">Zen OS</h2>
-        <p style="color:var(--text-2); font-size:12.5px; margin-top:6px;">Version 1.0 · Frontend Edition</p>
-        <p style="color:var(--text-3); font-size:11.5px; margin-top:14px; max-width:320px; margin-left:auto; margin-right:auto; line-height:1.6;">Zen OS is a browser-based operating-system simulator built with HTML, CSS and JavaScript. It implements a custom kernel-like architecture with process management, CPU scheduling simulation, virtual memory management, a virtual filesystem, permissions, IPC, system calls, package management and system services. No backend or account server is used.</p>
+        <p style="color:var(--text-2); font-size:12.5px; margin-top:6px;">Version 1.8.1 · Frontend Edition</p>
+        <p style="color:var(--text-3); font-size:11.5px; margin-top:14px; max-width:320px; margin-left:auto; margin-right:auto; line-height:1.6;">Zen OS is a browser-based operating-system simulator built with HTML, CSS and JavaScript Build by Taiwo Jegede. It implements a custom kernel-like architecture with process management, CPU scheduling simulation, virtual memory management, a virtual filesystem, permissions, IPC, system calls, package management and system services. No backend: It's uses browser local storage.</p>
       </div>`;
     }
     panel.innerHTML = html;
+    panel.querySelectorAll('[data-remove-user]').forEach(el=>el.addEventListener('click', ()=>{
+      if(!requireAdmin('Removing an account')) return;
+      const id = el.dataset.removeUser;
+      const acct = loadUsers().find(u=>u.id===id);
+      if(!acct) return;
+      if(!confirm(`Remove ${acct.username} and permanently delete their files and data?`)) return;
+      saveUsers(loadUsers().filter(u=>u.id!==id));
+      try{ localStorage.removeItem(userStateKey(id)); }catch(e){}
+      notify('Account removed', acct.username+' and their data were deleted.', '🗑️', '#ff9f5c');
+      drawSection();
+    }));
     panel.querySelectorAll('[data-wp]').forEach(el=>el.addEventListener('click', ()=>{ s.wallpaper = el.dataset.wp; applyWallpaper(); saveState(); drawSection(); }));
     panel.querySelectorAll('[data-cursor]').forEach(el=>el.addEventListener('click', ()=>{ s.cursorId = el.dataset.cursor; applyCursor(); saveState(); drawSection(); }));
     panel.querySelectorAll('[data-toggle]').forEach(el=>el.addEventListener('click', ()=>{
@@ -1668,17 +2810,39 @@ function renderSettingsApp(body, w){
       if(key==='nightlight'){ s.nightlight = !s.nightlight; applyDisplayEffects(); saveState(); drawSection(); return; }
       if(['wifi','airplane','dnd'].includes(key)){ s[key] = !s[key]; saveState(); drawSection(); refreshNetworkUi(); }
     }));
-    const un = panel.querySelector('#set-username'); if(un) un.addEventListener('input', e=>{ s.username=e.target.value; saveState(); });
+    const un = panel.querySelector('#set-username'); if(un) un.addEventListener('input', e=>{ s.username=e.target.value; saveState(); const users=loadUsers(); const acct=users.find(u=>u.id===activeUserId); if(acct){ acct.username=e.target.value; saveUsers(users); } });
     const br = panel.querySelector('#set-brightness'); if(br) br.addEventListener('input', e=>{ s.brightness=+e.target.value; applyDisplayEffects(); saveState(); });
     const vo = panel.querySelector('#set-volume'); if(vo) vo.addEventListener('input', e=>{ s.volume=+e.target.value; saveState(); });
     const cn = panel.querySelector('#set-clearnotif'); if(cn) cn.addEventListener('click', ()=>{ state.notifications=[]; saveState(); renderTrayBadge(); });
-    const rs = panel.querySelector('#set-reset'); if(rs) rs.addEventListener('click', ()=>{ if(confirm('Reset all Zen OS data? This cannot be undone.')){ localStorage.removeItem(LS_KEY); location.reload(); } });
+    const exportProfile = panel.querySelector('#set-export-profile'); if(exportProfile) exportProfile.addEventListener('click', downloadCurrentUserProfile);
+    const importProfile = panel.querySelector('#set-import-profile');
+    const importFile = panel.querySelector('#set-import-profile-file');
+    if(importProfile && importFile){
+      importProfile.addEventListener('click', ()=>importFile.click());
+      importFile.addEventListener('change', event=>{
+        const file = event.target.files?.[0];
+        if(!file) return;
+        if(!confirm('Importing a backup will replace the current Zen OS profile. Continue?')){ event.target.value=''; return; }
+        const reader = new FileReader();
+        reader.onload = ()=>{
+          const imported = importUserProfileFromJson(String(reader.result || ''));
+          notify(imported ? 'Backup restored' : 'Import failed', imported ? 'Your profile will reload now.' : 'The selected file is not a valid Zen OS backup.', imported ? '✅' : '⚠️', imported ? '#4ade80' : '#ff5c5c');
+          if(imported) setTimeout(()=>location.reload(), 500);
+        };
+        reader.readAsText(file);
+        event.target.value='';
+      });
+    }
+    const rs = panel.querySelector('#set-reset'); if(rs) rs.addEventListener('click', ()=>{ if(!requireAdmin('Resetting Zen OS')) return; if(confirm('Reset all Zen OS data? This cannot be undone.')){ localStorage.removeItem(LS_KEY); location.reload(); } });
     panel.querySelectorAll('[data-uninstall]').forEach(el=>el.addEventListener('click', ()=>{
       const id = el.dataset.uninstall;
-      state.installedApps = state.installedApps.filter(a=>a!==id);
+      const name = appMeta(id).name;
+      const proj = userAppById(id);
+      if(proj){ proj.installed = false; } // keep the source project in CodeForge, just unpublish it
+      else { state.installedApps = state.installedApps.filter(a=>a!==id); }
       windows.filter(win=>win.appId===id).forEach(win=>closeWindow(win.id));
-      saveState(); drawSection();
-      notify('App uninstalled', appMeta(id).name+' was removed', '🗑️', '#ff6b6b');
+      saveState(); drawSection(); renderTaskbarApps(); renderDesktopIcons();
+      notify('App uninstalled', name+' was removed', '🗑️', '#ff6b6b');
     }));
   }
   draw();
@@ -1706,7 +2870,7 @@ function renderTaskManager(body, w){
         ${filtered.length? filtered.map(p=>{
           const m = appMeta(p.appId); const cpu = (p.cpuTime / 1000).toFixed(2); const mem = Math.round(p.memoryUsed / 1024 / 1024);
           return `<div class="card" style="display:flex; align-items:center; gap:14px;">
-            <div style="width:32px; height:32px; border-radius:0; background:${m.color}33; color:${m.color}; display:flex; align-items:center; justify-content:center; font-size:16px;">${iconHtml(m.svgKey, m.icon)}</div>
+            <div style="width:32px; height:32px; border-radius:0; background:${m.color}33; color:${m.color}; display:flex; align-items:center; justify-content:center; font-size:16px;">${iconHtml(m.svgKey, m.icon, m.favicon)}</div>
             <div style="flex:1;"><div style="font-size:12.5px; font-weight:600;">${escapeHtml(p.name)}</div><div style="font-size:11px; color:var(--text-3);">PID ${p.pid} · ${p.state} · Parent ${p.parentPid || '-'}</div></div>
             <div style="text-align:right; font-size:11px; color:var(--text-2); width:70px;">CPU TIME<br><b style="color:var(--text-1);">${cpu}s</b></div>
             <div style="text-align:right; font-size:11px; color:var(--text-2); width:70px;">MEM<br><b style="color:var(--text-1);">${mem} MB</b></div>
@@ -1725,19 +2889,21 @@ function renderTaskManager(body, w){
     body.querySelector('#tm-refresh')?.addEventListener('click', draw);
     body.querySelectorAll('[data-monitor-tab]').forEach(el=>el.addEventListener('click', ()=>{ inst.tab=el.dataset.monitorTab; draw(); }));
     body.querySelector('#tm-search')?.addEventListener('input', e=>{ inst.query=e.target.value; draw(); });
-    body.querySelector('#tm-config')?.addEventListener('click', ()=>{ ZenKernel.schedulerControl.configure({algorithm:body.querySelector('#tm-algorithm').value,timeSlice:Number(body.querySelector('#tm-slice').value)}); draw(); });
+    body.querySelector('#tm-config')?.addEventListener('click', ()=>{ if(!requireAdmin('Reconfiguring the scheduler')) return; ZenKernel.schedulerControl.configure({algorithm:body.querySelector('#tm-algorithm').value,timeSlice:Number(body.querySelector('#tm-slice').value)}); draw(); });
     if(body.querySelector('#tm-algorithm')) body.querySelector('#tm-algorithm').value=stats.scheduler.algorithm;
     body.querySelectorAll('[data-kill]').forEach(el=>el.addEventListener('click', ()=>{
+      if(!requireAdmin('Ending a process')) return;
       const pid = Number(el.dataset.kill); const target = windows.find(x=>x.pid===pid);
       if(window.ZenKernel) ZenKernel.process.kill(pid);
       if(target) closeWindow(target.id); else draw();
     }));
     body.querySelectorAll('[data-suspend]').forEach(el=>el.addEventListener('click', ()=>{
+      if(!requireAdmin('Suspending a process')) return;
       const pid = Number(el.dataset.suspend); const process = ZenKernel.process.get(pid);
       if(process.state === 'SUSPENDED') ZenKernel.process.resume(pid); else ZenKernel.process.suspend(pid);
       draw();
     }));
-    body.querySelectorAll('[data-priority-pid]').forEach(el=>el.addEventListener('change', ()=>{ try{ ZenKernel.process.priority(Number(el.dataset.priorityPid), Number(el.value)); draw(); }catch(error){ notify('Priority update failed', error.message, '⚠️', '#ff5c5c'); } }));
+    body.querySelectorAll('[data-priority-pid]').forEach(el=>el.addEventListener('change', ()=>{ if(!requireAdmin('Changing process priority')){ draw(); return; } try{ ZenKernel.process.priority(Number(el.dataset.priorityPid), Number(el.value)); draw(); }catch(error){ notify('Priority update failed', error.message, '⚠️', '#ff5c5c'); } }));
   }
   draw();
   const timer = setInterval(()=>{ if(!document.body.contains(body)) return clearInterval(timer); draw(); }, 1000);
@@ -1759,7 +2925,7 @@ const ZB_HOME = 'https://duckduckgo.com/html/';
 function zbNewTabState(url){ const u = url||ZB_HOME; return {id:uid('tab'), url:u, input:u, history:[u], hi:0, blocked:false, loading:true, zoom:100}; }
 function renderBrowser(body, w){
   const inst = winInstances[w.id];
-  inst.tabs = inst.tabs && inst.tabs.length ? inst.tabs : [zbNewTabState()];
+  inst.tabs = inst.tabs && inst.tabs.length ? inst.tabs : [zbNewTabState(w.data && w.data.url)];
   inst.tabs.forEach(t=>{ t.id = t.id || uid('tab'); t.zoom = t.zoom || 100; });
   inst.active = inst.active ?? 0;
   if(inst.active >= inst.tabs.length) inst.active = inst.tabs.length-1;
@@ -2334,16 +3500,152 @@ function renderSpotify(body, w){
   draw();
 }
 
+/* ---- CAMERA ----
+   Real webcam via getUserMedia. Photos are captured from the live video frame
+   onto a canvas, encoded as JPEG, and saved into the Pictures folder. */
+function renderCamera(body, w){
+  const inst = winInstances[w.id];
+  inst.timer = 0; inst.devices = []; inst.devIdx = 0; inst.counting = false; inst.stream = null;
+  body.innerHTML = `<div class="app cam-app">
+    <div class="cam-stage">
+      <video id="cam-video" autoplay playsinline muted></video>
+      <div class="cam-corners"></div>
+      <div class="cam-count" id="cam-count"></div>
+      <div class="cam-flash" id="cam-flash"></div>
+      <div class="cam-msg" id="cam-msg"></div>
+    </div>
+    <div class="cam-bar">
+      <div class="cam-left">
+        <button class="cam-thumb" id="cam-thumb" title="Open Pictures folder">📁</button>
+        <div class="cam-side">
+          <button class="pill" id="cam-timer">⏱ Timer: Off</button>
+          <button class="pill" id="cam-switch" style="display:none;">🔄 Switch</button>
+        </div>
+      </div>
+      <button class="cam-shutter" id="cam-shutter" title="Take photo" disabled></button>
+      <div class="cam-hint" id="cam-hint">Photos save to Pictures</div>
+    </div>
+  </div>`;
+  const $ = sel=>body.querySelector(sel);
+  const video = $('#cam-video'), msg = $('#cam-msg'), shutter = $('#cam-shutter'), thumb = $('#cam-thumb');
+
+  function showMsg(icon, title, text, retry){
+    msg.innerHTML = `<div class="cam-msg-card"><div class="cam-msg-ic">${icon}</div><div class="cam-msg-t">${escapeHtml(title)}</div><div class="cam-msg-x">${escapeHtml(text||'')}</div>${retry?'<button class="btn primary" id="cam-retry">Try again</button>':''}</div>`;
+    msg.style.display = 'flex';
+    const r = msg.querySelector('#cam-retry'); if(r) r.addEventListener('click', ()=>start());
+  }
+  function hideMsg(){ msg.style.display = 'none'; }
+  function stop(){
+    if(inst.stream){ inst.stream.getTracks().forEach(t=>t.stop()); inst.stream = null; }
+    video.srcObject = null; shutter.disabled = true;
+  }
+  inst.cleanup = ()=>{ inst.closed = true; clearTimeout(inst.tmr); stop(); };
+
+  async function start(deviceId){
+    stop();
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      showMsg('🚫','Camera not available',"This page isn't allowed to use a camera. Open it from localhost or an https:// address.", false); return;
+    }
+    showMsg('📷','Starting camera…','Allow camera access if your browser asks.', false);
+    try{
+      const video_c = {width:{ideal:1280}, height:{ideal:720}};
+      if(deviceId) video_c.deviceId = {exact:deviceId}; else video_c.facingMode = 'user';
+      const stream = await navigator.mediaDevices.getUserMedia({video:video_c, audio:false});
+      if(inst.closed){ stream.getTracks().forEach(t=>t.stop()); return; } // closed while the permission prompt was open
+      inst.stream = stream; video.srcObject = stream;
+      try{ await video.play(); }catch(e){}
+      const settings = stream.getVideoTracks()[0].getSettings ? stream.getVideoTracks()[0].getSettings() : {};
+      // Front/laptop cameras preview mirrored (like a mirror); the rear camera does not.
+      video.style.transform = settings.facingMode==='environment' ? 'none' : 'scaleX(-1)';
+      try{
+        inst.devices = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+        const idx = inst.devices.findIndex(d=>d.deviceId===settings.deviceId); inst.devIdx = idx<0?0:idx;
+        $('#cam-switch').style.display = inst.devices.length>1 ? '' : 'none';
+      }catch(e){}
+      hideMsg(); shutter.disabled = false;
+    }catch(err){
+      if(inst.closed) return;
+      const n = err && err.name;
+      if(n==='NotAllowedError' || n==='SecurityError') showMsg('🔒','Camera access blocked',"Click the camera/lock icon in your browser's address bar, choose Allow, then try again.", true);
+      else if(n==='NotFoundError' || n==='OverconstrainedError') showMsg('📵','No camera found','Plug in a webcam (or check it is enabled) and try again.', true);
+      else if(n==='NotReadableError' || n==='AbortError') showMsg('⚠️','Camera is busy','Another app or tab is using the camera. Close it and try again.', true);
+      else showMsg('⚠️','Could not start the camera', (err && err.message) || 'Unknown error', true);
+    }
+  }
+
+  function flash(){ const f = $('#cam-flash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
+  function setThumb(node){
+    if(node && node.assetPath) thumb.innerHTML = `<img src="${escapeHtml(node.assetPath)}" alt="Last photo">`;
+  }
+  function capture(){
+    if(!inst.stream || !video.videoWidth) return;
+    const vw = video.videoWidth, vh = video.videoHeight, sc = Math.min(1, 1920/vw);
+    const c = document.createElement('canvas'); c.width = Math.round(vw*sc); c.height = Math.round(vh*sc);
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);   // saved un-mirrored, like a normal photo
+    flash();
+    c.toBlob(async blob=>{
+      if(!blob){ notify('Could not take photo','The camera returned an empty frame.','⚠️','#ff5c5c'); return; }
+      try{
+        const node = await savePhotoToPictures(blob, c.width, c.height);
+        setThumb(node);
+        notify('Photo saved', node.name+' was saved to Pictures', '📷', '#ff6b9d');
+      }catch(e){
+        notify('Could not save photo', (e && e.message) || 'Storage is full or unavailable.', '⚠️', '#ff5c5c');
+      }
+    }, 'image/jpeg', 0.92);
+  }
+  function countdown(n){
+    inst.counting = true; shutter.classList.add('busy');
+    const cnt = $('#cam-count');
+    const tick = ()=>{
+      if(inst.closed) return;
+      if(n<=0){ cnt.textContent = ''; inst.counting = false; shutter.classList.remove('busy'); capture(); return; }
+      cnt.textContent = n; n--; inst.tmr = setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  shutter.addEventListener('click', ()=>{
+    if(inst.counting){ clearTimeout(inst.tmr); inst.counting = false; shutter.classList.remove('busy'); $('#cam-count').textContent = ''; return; } // cancel
+    if(!inst.stream) return;
+    if(inst.timer>0) countdown(inst.timer); else capture();
+  });
+  $('#cam-timer').addEventListener('click', ()=>{
+    inst.timer = inst.timer===0 ? 3 : inst.timer===3 ? 10 : 0;
+    $('#cam-timer').textContent = '⏱ Timer: ' + (inst.timer? inst.timer+'s' : 'Off');
+  });
+  $('#cam-switch').addEventListener('click', ()=>{
+    if(inst.devices.length<2) return;
+    inst.devIdx = (inst.devIdx+1) % inst.devices.length;
+    start(inst.devices[inst.devIdx].deviceId);
+  });
+  thumb.addEventListener('click', ()=>{
+    const pics = picturesFolder();
+    openApp('filemanager');
+    const fw = [...windows].reverse().find(x=>x.appId==='filemanager');
+    if(fw){ winInstances[fw.id].cwd = ['root', pics.id]; document.dispatchEvent(new CustomEvent('zenfs:changed')); }
+  });
+  // Thumbnail = newest camera photo already in Pictures
+  const existing = picturesFolder().children.filter(c=>c.idbKey && c.assetPath).sort((a,b)=>b.createdAt-a.createdAt)[0];
+  setThumb(existing);
+  start();
+}
+
 /* ---- GAMES ---- */
 function renderGames(body, w){
   const inst = winInstances[w.id]; inst.tab = inst.tab || 'library'; inst.installing = inst.installing || {};
   function draw(){
-    body.innerHTML = `<div class="app">
-      <div class="app-toolbar">
-        ${['library','installed','categories'].map(t=>`<button class="pill" data-t="${t}" style="background:${inst.tab===t?'var(--panel-strong)':'var(--panel)'};">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}
-        <input class="search" placeholder="Search games" id="gm-search">
+    body.innerHTML = `<div class="app" style="padding:0;">
+      <div class="side-split" style="flex:1;">
+        <div class="side-nav">
+          <div class="sm-section-title" style="padding:6px 12px 12px;">Zen Games</div>
+          ${[['library','📚','Library'],['installed','📥','Installed'],['categories','🗂️','Categories']].map(([t,ic,label])=>`<div class="side-item ${inst.tab===t?'active':''}" data-t="${t}">${ic} ${label}</div>`).join('')}
+        </div>
+        <div class="store-main">
+          <div class="store-search"><span class="store-search-ic">🔍</span><input class="store-search-input" placeholder="Search games" id="gm-search"></div>
+          <div class="store-body" id="gm-body"></div>
+        </div>
       </div>
-      <div class="app-body" id="gm-body"></div>
     </div>`;
     body.querySelectorAll('[data-t]').forEach(el=>el.addEventListener('click', ()=>{ inst.tab=el.dataset.t; draw(); }));
     body.querySelector('#gm-search').addEventListener('input', e=>drawList(e.target.value));
@@ -2354,22 +3656,16 @@ function renderGames(body, w){
     let list = inst.tab==='installed' ? GAME_CATALOG.filter(g=>state.installedGames.includes(g.id)) : GAME_CATALOG;
     if(filter) list = list.filter(g=>g.name.toLowerCase().includes(filter.toLowerCase()));
     if(!list.length){ gb.innerHTML = `<div class="empty-state"><div class="ic">🎮</div>${inst.tab==='installed'?'No games installed yet':'No games found'}</div>`; return; }
-    gb.innerHTML = `<div class="grid-cards">${list.map(gameCard).join('')}</div>`;
+    if(inst.tab==='library' && !filter){
+      gb.innerHTML = `${storeHero(list[0],'game',state.installedGames,'▶ Play')}
+        <div class="store-section"><div class="store-section-head"><div class="store-section-title">All Games</div></div><div class="grid-cards store-grid">${list.map(g=>catalogCard(g,'game',state.installedGames,inst.installing,'▶ Play')).join('')}</div></div>`;
+    } else if(inst.tab==='categories' && !filter){
+      const cats = [...new Set(list.map(g=>g.cat))];
+      gb.innerHTML = cats.map(cat=>`<div class="store-section"><div class="store-section-head"><div class="store-section-title">${escapeHtml(cat)}</div></div><div class="grid-cards store-grid">${list.filter(g=>g.cat===cat).map(g=>catalogCard(g,'game',state.installedGames,inst.installing,'▶ Play')).join('')}</div></div>`).join('');
+    } else {
+      gb.innerHTML = `<div class="grid-cards store-grid">${list.map(g=>catalogCard(g,'game',state.installedGames,inst.installing,'▶ Play')).join('')}</div>`;
+    }
     bindGameButtons(gb);
-  }
-  function gameCard(g){
-    const installed = state.installedGames.includes(g.id);
-    const prog = inst.installing[g.id];
-    return `<div class="card" style="padding:0; overflow:hidden;">
-      <div style="width:100%; aspect-ratio:16/10; background:linear-gradient(135deg, ${g.color}, #0a0c12); display:flex; align-items:center; justify-content:center; font-size:34px;">${g.icon}</div>
-      <div style="padding:12px;">
-        <div style="font-size:13px; font-weight:600;">${escapeHtml(g.name)}</div>
-        <div style="font-size:11px; color:var(--text-3); margin:4px 0 8px;">⭐ ${g.rating} · ${g.size}</div>
-        ${prog!==undefined ? `<div class="progress-track" style="margin-bottom:8px;"><div class="progress-fill" style="width:${prog}%;"></div></div><div style="font-size:10.5px; color:var(--text-2);">Installing... ${prog}%</div>`
-          : installed ? `<button class="btn primary" data-launch="${g.id}" style="width:100%;">▶ Launch</button><button class="pill" data-uninstall="${g.id}" style="width:100%; margin-top:6px;">Uninstall</button>`
-          : `<button class="btn primary" data-install="${g.id}" style="width:100%;">⬇ Install</button>`}
-      </div>
-    </div>`;
   }
   function bindGameButtons(gb){
     gb.querySelectorAll('[data-install]').forEach(el=>el.addEventListener('click', ()=>{
@@ -2391,186 +3687,14 @@ function renderGames(body, w){
       }, 380);
     }));
     gb.querySelectorAll('[data-uninstall]').forEach(el=>el.addEventListener('click', ()=>{
-      state.installedGames = state.installedGames.filter(x=>x!==el.dataset.uninstall); saveState(); drawList();
+      const id = el.dataset.uninstall;
+      state.installedGames = state.installedGames.filter(x=>x!==id);
+      windows.filter(win=>win.appId===id).forEach(win=>closeWindow(win.id));
+      saveState(); drawList();
     }));
     gb.querySelectorAll('[data-launch]').forEach(el=>el.addEventListener('click', ()=>{
-      const g = GAME_CATALOG.find(x=>x.id===el.dataset.launch);
-      launchGame(g);
+      launchCatalogApp(el.dataset.launch);
     }));
-  }
-  function launchGame(g){
-    const gb = body.querySelector('#gm-body');
-    if(g.id === 'gm-nebulacrash'){ launchNebulaCrash(gb, g); return; }
-    gb.innerHTML = `<div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:linear-gradient(135deg, ${g.color}22, transparent);">
-      <div style="font-size:56px;">${g.icon}</div>
-      <div style="font-family:var(--font-display); font-size:16px;">Launching ${escapeHtml(g.name)}...</div>
-      <div class="progress-track" style="width:220px;"><div class="progress-fill" id="gm-launch-bar" style="width:0%;"></div></div>
-      <button class="pill" id="gm-launch-back">← Back to Library</button>
-    </div>`;
-    let p=0; const iv=setInterval(()=>{ p+=12; const bar=gb.querySelector('#gm-launch-bar'); if(bar) bar.style.width=Math.min(p,100)+'%'; if(p>=100){ clearInterval(iv); const box=gb.querySelector('div'); if(box) box.innerHTML=`<div style="text-align:center;"><div style="font-size:56px;">${g.icon}</div><div style="font-family:var(--font-display); font-size:16px; margin-top:10px;">${escapeHtml(g.name)} is running</div><div style="color:var(--text-3); font-size:11.5px; margin-top:6px;">Simulated gameplay — this is a demo launch screen.</div><button class="pill" id="gm-launch-back2" style="margin-top:14px;">← Back to Library</button></div>`; document.getElementById('gm-launch-back2')?.addEventListener('click', draw); } }, 220);
-    gb.querySelector('#gm-launch-back').addEventListener('click', draw);
-  }
-  function launchNebulaCrash(gb, g){
-    const NC_HS_KEY = 'zenos_nebulacrash_highscore';
-    let rafId = null;
-    let keys = {};
-    let keydownHandler = null, keyupHandler = null;
-
-    function getBest(){ return Number(localStorage.getItem(NC_HS_KEY)) || 0; }
-    function setBest(v){ try{ localStorage.setItem(NC_HS_KEY, String(v)); }catch(e){} }
-
-    function cleanup(){
-      if(rafId!=null){ cancelAnimationFrame(rafId); rafId=null; }
-      if(keydownHandler){ document.removeEventListener('keydown', keydownHandler); keydownHandler=null; }
-      if(keyupHandler){ document.removeEventListener('keyup', keyupHandler); keyupHandler=null; }
-    }
-    function backToLibrary(){
-      cleanup();
-      draw();
-    }
-
-    function showIntro(){
-      cleanup();
-      gb.innerHTML = `<div class="nc-wrap">
-        <div class="nc-panel">
-          <div class="nc-icon">${g.icon}</div>
-          <div class="nc-title">${escapeHtml(g.name)}</div>
-          <div class="nc-sub">Dodge the falling asteroids and survive as long as you can.</div>
-          <div class="nc-sub">Move with ← → ↑ ↓ or W A S D</div>
-          <div class="nc-best">Best score: ${getBest()}</div>
-          <button class="btn primary" id="nc-start-btn">▶ Start Game</button>
-          <button class="pill" id="nc-back-btn">← Back to Library</button>
-        </div>
-      </div>`;
-      gb.querySelector('#nc-start-btn').addEventListener('click', startGame);
-      gb.querySelector('#nc-back-btn').addEventListener('click', backToLibrary);
-    }
-
-    function startGame(){
-      cleanup();
-      gb.innerHTML = `<div class="nc-wrap">
-        <div class="nc-hud">
-          <span>Score: <b id="nc-score">0</b></span>
-          <span>Best: <b id="nc-hud-best">${getBest()}</b></span>
-          <button class="pill" id="nc-quit-btn">← Back to Library</button>
-        </div>
-        <canvas id="nc-canvas" class="nc-canvas" width="480" height="320"></canvas>
-      </div>`;
-      gb.querySelector('#nc-quit-btn').addEventListener('click', backToLibrary);
-
-      const canvas = gb.querySelector('#nc-canvas');
-      const ctx = canvas.getContext('2d');
-      const W = canvas.width, H = canvas.height;
-
-      const player = {w:26, h:18, x: W/2-13, y: H-36, speed:4.2};
-      let asteroids = [];
-      let score = 0;
-      let spawnTimer = 0;
-      let elapsed = 0;
-      let lastTs = null;
-      let over = false;
-
-      keys = {};
-      keydownHandler = e=>{
-        const k = e.key.toLowerCase();
-        if(['arrowleft','arrowright','arrowup','arrowdown','a','d','w','s'].includes(k)) e.preventDefault();
-        keys[k] = true;
-      };
-      keyupHandler = e=>{ keys[e.key.toLowerCase()] = false; };
-      document.addEventListener('keydown', keydownHandler);
-      document.addEventListener('keyup', keyupHandler);
-
-      function spawnAsteroid(){
-        const r = 8 + Math.random()*14;
-        asteroids.push({x: Math.random()*(W-r*2)+r, y:-r, r, speed: 1.6 + Math.min(elapsed/12, 5) + Math.random()*1.2});
-      }
-
-      function loop(ts){
-        if(!gb.isConnected){ cleanup(); return; }
-        if(lastTs==null) lastTs = ts;
-        const dt = Math.min((ts-lastTs)/1000, 0.05);
-        lastTs = ts;
-        elapsed += dt;
-
-        const left = keys['arrowleft']||keys['a'];
-        const right = keys['arrowright']||keys['d'];
-        const up = keys['arrowup']||keys['w'];
-        const down = keys['arrowdown']||keys['s'];
-        const move = player.speed*(dt*60);
-        if(left) player.x -= move;
-        if(right) player.x += move;
-        if(up) player.y -= move;
-        if(down) player.y += move;
-        player.x = Math.max(4, Math.min(W-player.w-4, player.x));
-        player.y = Math.max(4, Math.min(H-player.h-4, player.y));
-
-        spawnTimer += dt;
-        const spawnInterval = Math.max(0.9 - elapsed*0.02, 0.22);
-        if(spawnTimer > spawnInterval){ spawnTimer = 0; spawnAsteroid(); }
-
-        asteroids.forEach(a=> a.y += a.speed*(dt*60));
-        asteroids = asteroids.filter(a=> a.y - a.r < H+20);
-
-        const px = player.x, py = player.y, pw = player.w, ph = player.h;
-        for(const a of asteroids){
-          const closestX = Math.max(px, Math.min(a.x, px+pw));
-          const closestY = Math.max(py, Math.min(a.y, py+ph));
-          const dx = a.x - closestX, dy = a.y - closestY;
-          if(dx*dx+dy*dy < a.r*a.r){ over = true; break; }
-        }
-
-        score += dt*10;
-
-        ctx.fillStyle = '#0a0a14';
-        ctx.fillRect(0,0,W,H);
-
-        ctx.fillStyle = '#ff5c5c';
-        asteroids.forEach(a=>{
-          ctx.beginPath();
-          ctx.arc(a.x, a.y, a.r, 0, Math.PI*2);
-          ctx.fill();
-        });
-
-        ctx.fillStyle = '#8c6cff';
-        ctx.beginPath();
-        ctx.moveTo(player.x+player.w/2, player.y);
-        ctx.lineTo(player.x, player.y+player.h);
-        ctx.lineTo(player.x+player.w, player.y+player.h);
-        ctx.closePath();
-        ctx.fill();
-        ctx.fillStyle = '#2fe6c9';
-        ctx.fillRect(player.x+player.w/2-2, player.y+player.h-4, 4, 6);
-
-        const scoreEl = gb.querySelector('#nc-score');
-        if(scoreEl) scoreEl.textContent = Math.floor(score);
-
-        if(over){ endGame(Math.floor(score)); return; }
-        rafId = requestAnimationFrame(loop);
-      }
-      rafId = requestAnimationFrame(loop);
-    }
-
-    function endGame(finalScore){
-      cleanup();
-      const best = getBest();
-      const isNew = finalScore > best;
-      if(isNew) setBest(finalScore);
-      const newBest = isNew ? finalScore : best;
-      gb.innerHTML = `<div class="nc-wrap">
-        <div class="nc-panel">
-          <div class="nc-icon">💥</div>
-          <div class="nc-title">Game Over</div>
-          <div class="nc-score-line">Score: ${finalScore}</div>
-          <div class="nc-best">${isNew?'New high score!':'Best: '+newBest}</div>
-          <button class="btn primary" id="nc-again-btn">↺ Play Again</button>
-          <button class="pill" id="nc-back-btn2">← Back to Library</button>
-        </div>
-      </div>`;
-      gb.querySelector('#nc-again-btn').addEventListener('click', startGame);
-      gb.querySelector('#nc-back-btn2').addEventListener('click', backToLibrary);
-    }
-
-    showIntro();
   }
   draw();
 }
@@ -2579,12 +3703,17 @@ function renderGames(body, w){
 function renderSoftwareHub(body, w){
   const inst = winInstances[w.id]; inst.tab = inst.tab || 'home'; inst.installing = inst.installing || {};
   function draw(){
-    body.innerHTML = `<div class="app">
-      <div class="app-toolbar">
-        ${['home','apps','games','installed','updates'].map(t=>`<button class="pill" data-t="${t}" style="background:${inst.tab===t?'var(--panel-strong)':'var(--panel)'};">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}
-        <input class="search" placeholder="Search Software Hub" id="sh-search">
+    body.innerHTML = `<div class="app" style="padding:0;">
+      <div class="side-split" style="flex:1;">
+        <div class="side-nav">
+          <div class="sm-section-title" style="padding:6px 12px 12px;">🍋 Software Hub</div>
+          ${[['home','🏠','Home'],['apps','🧩','Apps'],['games','🎮','Games'],['installed','📥','Installed'],['updates','🔄','Updates']].map(([t,ic,label])=>`<div class="side-item ${inst.tab===t?'active':''}" data-t="${t}">${ic} ${label}</div>`).join('')}
+        </div>
+        <div class="store-main">
+          <div class="store-search"><span class="store-search-ic">🔍</span><input class="store-search-input" placeholder="Search Software Hub" id="sh-search"></div>
+          <div class="store-body" id="sh-body"></div>
+        </div>
       </div>
-      <div class="app-body" id="sh-body"></div>
     </div>`;
     body.querySelectorAll('[data-t]').forEach(el=>el.addEventListener('click', ()=>{ inst.tab=el.dataset.t; draw(); }));
     body.querySelector('#sh-search').addEventListener('input', e=>drawList(e.target.value));
@@ -2596,39 +3725,23 @@ function renderSoftwareHub(body, w){
     if(filter){ apps = apps.filter(a=>a.name.toLowerCase().includes(filter.toLowerCase())); games = games.filter(g=>g.name.toLowerCase().includes(filter.toLowerCase())); }
     if(inst.tab==='home'){
       sb.innerHTML = `
-        <div class="sm-section-title" style="padding-left:0;">Featured</div>
-        <div class="grid-cards">${apps.slice(0,4).map(a=>appCard(a,'app')).join('')}</div>
-        <div class="sm-section-title" style="padding-left:0; margin-top:16px;">Popular Games</div>
-        <div class="grid-cards">${games.slice(0,3).map(g=>appCard(g,'game')).join('')}</div>`;
+        ${apps[0] && !filter ? storeHero(apps[0],'app',state.installedApps,'Open') : ''}
+        <div class="store-section"><div class="store-section-head"><div class="store-section-title">Featured Apps</div></div><div class="grid-cards store-grid">${apps.length?apps.slice(0,4).map(a=>catalogCard(a,'app',state.installedApps,inst.installing,'Open')).join(''):'<div class="np-empty">No apps found</div>'}</div></div>
+        <div class="store-section"><div class="store-section-head"><div class="store-section-title">Popular Games</div></div><div class="grid-cards store-grid">${games.length?games.slice(0,3).map(g=>catalogCard(g,'game',state.installedGames,inst.installing,'▶ Play')).join(''):'<div class="np-empty">No games found</div>'}</div></div>`;
     } else if(inst.tab==='apps'){
       const cats = [...new Set(apps.map(a=>a.cat))];
-      sb.innerHTML = cats.map(cat=>`<div class="sm-section-title" style="padding-left:0;">${cat}</div><div class="grid-cards">${apps.filter(a=>a.cat===cat).map(a=>appCard(a,'app')).join('')}</div>`).join('');
+      sb.innerHTML = cats.length ? cats.map(cat=>`<div class="store-section"><div class="store-section-head"><div class="store-section-title">${escapeHtml(cat)}</div></div><div class="grid-cards store-grid">${apps.filter(a=>a.cat===cat).map(a=>catalogCard(a,'app',state.installedApps,inst.installing,'Open')).join('')}</div></div>`).join('') : `<div class="empty-state"><div class="ic">🔍</div>No apps found</div>`;
     } else if(inst.tab==='games'){
-      sb.innerHTML = `<div class="grid-cards">${games.map(g=>appCard(g,'game')).join('')}</div>`;
+      sb.innerHTML = games.length ? `<div class="grid-cards store-grid">${games.map(g=>catalogCard(g,'game',state.installedGames,inst.installing,'▶ Play')).join('')}</div>` : `<div class="empty-state"><div class="ic">🔍</div>No games found</div>`;
     } else if(inst.tab==='installed'){
       const installedApps = SOFTWARE_CATALOG.filter(a=>state.installedApps.includes(a.id));
       const installedGames = GAME_CATALOG.filter(g=>state.installedGames.includes(g.id));
-      sb.innerHTML = `<div class="sm-section-title" style="padding-left:0;">Installed Apps</div><div class="grid-cards">${installedApps.length?installedApps.map(a=>appCard(a,'app')).join(''):'<div class="np-empty">None yet</div>'}</div>
-        <div class="sm-section-title" style="padding-left:0; margin-top:16px;">Installed Games</div><div class="grid-cards">${installedGames.length?installedGames.map(g=>appCard(g,'game')).join(''):'<div class="np-empty">None yet</div>'}</div>`;
+      sb.innerHTML = `<div class="store-section"><div class="store-section-head"><div class="store-section-title">Installed Apps</div></div><div class="grid-cards store-grid">${installedApps.length?installedApps.map(a=>catalogCard(a,'app',state.installedApps,inst.installing,'Open')).join(''):'<div class="np-empty">None yet</div>'}</div></div>
+        <div class="store-section"><div class="store-section-head"><div class="store-section-title">Installed Games</div></div><div class="grid-cards store-grid">${installedGames.length?installedGames.map(g=>catalogCard(g,'game',state.installedGames,inst.installing,'▶ Play')).join(''):'<div class="np-empty">None yet</div>'}</div></div>`;
     } else if(inst.tab==='updates'){
       sb.innerHTML = `<div class="empty-state"><div class="ic">✅</div>Everything is up to date</div>`;
     }
     bindCardButtons(sb);
-  }
-  function appCard(a, kind){
-    const installedList = kind==='app'?state.installedApps:state.installedGames;
-    const installed = installedList.includes(a.id);
-    const prog = inst.installing[a.id];
-    return `<div class="card" style="display:flex; flex-direction:column; gap:8px;">
-      <div style="display:flex; gap:10px; align-items:center;">
-        <div style="width:40px; height:40px; border-radius:0; background:${a.color}33; color:${a.color}; display:flex; align-items:center; justify-content:center; font-size:19px;">${a.icon}</div>
-        <div style="flex:1; min-width:0;"><div style="font-size:12.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(a.name)}</div><div style="font-size:10.5px; color:var(--text-3);">⭐ ${a.rating} · ${a.size}</div></div>
-      </div>
-      <div style="font-size:11px; color:var(--text-2); line-height:1.4; flex:1;">${escapeHtml(a.desc)}</div>
-      ${prog!==undefined ? `<div class="progress-track"><div class="progress-fill" style="width:${prog}%;"></div></div><div style="font-size:10px; color:var(--text-2);">${prog<100?'Installing...':'Finishing up...'} ${Math.floor(prog)}%</div>`
-        : installed ? `<div style="display:flex; gap:6px;"><button class="btn primary" data-launch="${a.id}" data-kind="${kind}" style="flex:1;">Open</button><button class="pill" data-uninstall="${a.id}" data-kind="${kind}">Uninstall</button></div>`
-        : `<button class="btn primary" data-install="${a.id}" data-kind="${kind}">⬇ Install</button>`}
-    </div>`;
   }
   function bindCardButtons(sb){
     sb.querySelectorAll('[data-install]').forEach(el=>el.addEventListener('click', ()=>{
@@ -2642,7 +3755,7 @@ function renderSoftwareHub(body, w){
             delete inst.installing[id];
             if(kind==='app'){
               const packageItem = SOFTWARE_CATALOG.find(x=>x.id===id);
-              if(window.ZenKernel) ZenKernel.packages.install({id:id, name:packageItem.name, version:'1.0.0', description:packageItem.desc, size:packageItem.size, dependencies:[], permissions:['filesystem.read','notifications'], entryPoint:id});
+              if(window.ZenKernel) ZenKernel.packages.install({id:id, name:packageItem.name, version:'1.8.1', description:packageItem.desc, size:packageItem.size, dependencies:[], permissions:['filesystem.read','notifications'], entryPoint:id});
               if(!state.installedApps.includes(id)) state.installedApps.push(id);
             } else if(!state.installedGames.includes(id)) state.installedGames.push(id);
             saveState();
@@ -2656,17 +3769,13 @@ function renderSoftwareHub(body, w){
     }));
     sb.querySelectorAll('[data-uninstall]').forEach(el=>el.addEventListener('click', ()=>{
       const id = el.dataset.uninstall; const kind = el.dataset.kind;
-      if(kind==='app'){ if(window.ZenKernel && ZenKernel.packages.list().some(pkg=>pkg.id===id)) ZenKernel.packages.uninstall(id); state.installedApps = state.installedApps.filter(x=>x!==id); windows.filter(win=>win.appId===id).forEach(win=>closeWindow(win.id)); }
+      if(kind==='app'){ if(window.ZenKernel && ZenKernel.packages.list().some(pkg=>pkg.id===id)) ZenKernel.packages.uninstall(id); state.installedApps = state.installedApps.filter(x=>x!==id); }
       else state.installedGames = state.installedGames.filter(x=>x!==id);
+      windows.filter(win=>win.appId===id).forEach(win=>closeWindow(win.id));
       saveState(); drawList();
     }));
     sb.querySelectorAll('[data-launch]').forEach(el=>el.addEventListener('click', ()=>{
-      const id = el.dataset.launch; const kind = el.dataset.kind;
-      if(kind==='app'){
-        if(id==='sw-pixelpaint') openApp('pixelpaint');
-        else openApp(id);
-      }
-      else openApp('games');
+      launchCatalogApp(el.dataset.launch);
     }));
   }
   draw();
@@ -2674,7 +3783,7 @@ function renderSoftwareHub(body, w){
 
 /* ---------------------- BOOT + LOGIN ---------------------- */
 const BOOT_LINES = [
-  'ZEN OS v1.0 — Frontend Edition',
+  'ZEN OS v1.8.1 — Frontend Edition',
   '[ OK ] Initializing memory manager',
   '[ OK ] Mounting virtual filesystem',
   '[ OK ] Starting process manager',
@@ -2722,60 +3831,375 @@ function runBootSequence(){
   setTimeout(step, 300);
 }
 
-function renderLoginScreen(){
+function renderLoginScreen(opts){
+  opts = opts || {};
   const clock = document.getElementById('login-clock');
   clock.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
   const card = document.getElementById('login-card');
-  if(!state.onboarded){
-    card.innerHTML = `
-      <div class="login-avatar" id="login-avatar-preview">${state.avatarEmoji||'🧑'}</div>
-      <div class="login-name">Create your account</div>
-      <div class="login-avatar-pick" id="login-avatar-pick">${AVATAR_CHOICES.map(a=>`<div class="av-opt ${a===(state.avatarEmoji||'🧑')?'sel':''}" data-av="${a}">${a}</div>`).join('')}</div>
-      <input class="login-input" id="login-name-input" placeholder="Your name" maxlength="20">
-      <button class="btn primary" id="login-create-btn" style="width:100%; justify-content:center;">Create Account</button>
-    `;
-    let chosenAv = state.avatarEmoji || '🧑';
-    card.querySelectorAll('.av-opt').forEach(el=>el.addEventListener('click', ()=>{
-      card.querySelectorAll('.av-opt').forEach(x=>x.classList.remove('sel'));
-      el.classList.add('sel'); chosenAv = el.dataset.av;
-      card.querySelector('#login-avatar-preview').textContent = chosenAv;
-    }));
-    const nameInput = card.querySelector('#login-name-input');
-    if(state.settings.username && state.settings.username !== 'Guest'){ nameInput.value = state.settings.username; }
-    function submit(){
-      const name = nameInput.value.trim();
-      if(!name){ nameInput.style.boxShadow='inset 2px 2px 0 rgba(255,92,92,.6)'; nameInput.focus(); return; }
-      state.settings.username = name;
-      state.avatarEmoji = chosenAv;
-      state.onboarded = true;
-      saveState();
-      completeLogin(true);
-    }
-    card.querySelector('#login-create-btn').addEventListener('click', submit);
-    nameInput.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
-    setTimeout(()=>nameInput.focus(), 50);
-  } else {
-    card.innerHTML = `
-      <div class="login-avatar">${state.avatarEmoji||'🧑'}</div>
-      <div class="login-name">${escapeHtml(state.settings.username)}</div>
-      <div class="login-sub">Owner</div>
-      <button class="btn primary" id="login-enter-btn" style="width:100%; justify-content:center;">Click to log in</button>
-      <div class="login-switch" id="login-switch-user">Not ${escapeHtml(state.settings.username)}?<br>Set up a new account</div>
-    `;
-    card.querySelector('#login-enter-btn').addEventListener('click', ()=>completeLogin(false));
-    card.querySelector('#login-switch-user').addEventListener('click', ()=>{
-      state.onboarded = false; saveState(); renderLoginScreen();
-    });
+  if(supabaseClient && opts.mode !== 'lock'){
+    if(opts.mode === 'forgot') return renderForgotPassword(card);
+    if(opts.mode === 'reset') return renderResetPassword(card);
+    return renderSupabaseAuth(card, opts.mode === 'create' ? 'signup' : 'signin');
   }
+  const users = loadUsers();
+  const mode = opts.mode || (users.length ? 'select' : 'create');
+  if(mode === 'create') return renderCreateAccount(card, users.length === 0);
+  if(mode === 'lock') return renderLockScreen(card, opts.userId || activeUserId);
+  return renderAccountPicker(card, users);
 }
 
-function completeLogin(isNewAccount){
-  document.getElementById('login-screen').style.display='none';
-  if(isNewAccount){
-    notify('Account created', 'Welcome to Zen OS, '+state.settings.username+'!', state.avatarEmoji||'🌸', '#7c6cff');
-  } else {
-    notify('Welcome back', state.settings.username, state.avatarEmoji||'🌸', '#7c6cff');
+function renderAccountPicker(card, users){
+  card.innerHTML = `
+    <div class="login-name" style="margin-bottom:16px;">Choose an account</div>
+    <div class="login-users">${users.map(u=>`
+      <button class="login-user" data-user="${u.id}">
+        <span class="login-user-av">${u.avatar||'🧑'}</span>
+        <span class="login-user-info"><span class="login-user-name">${escapeHtml(u.username)}</span><span class="login-user-role">${u.role==='admin'?'Administrator':'Standard'}${u.passHash?' · 🔒':''}</span></span>
+      </button>`).join('')}</div>
+    <button class="login-switch" id="login-add">+ Add account</button>
+    <div id="login-pw-area"></div>
+  `;
+  card.querySelectorAll('[data-user]').forEach(btn=>btn.addEventListener('click', ()=>{
+    const acct = users.find(u=>u.id===btn.dataset.user);
+    if(!acct) return;
+    if(!acct.passHash){ completeLoginUser(acct.id, false); return; }
+    card.querySelectorAll('.login-user').forEach(x=>x.classList.remove('sel'));
+    btn.classList.add('sel');
+    const pw = card.querySelector('#login-pw-area');
+    pw.innerHTML = `<input class="login-input" id="login-pw" type="password" placeholder="Password for ${escapeHtml(acct.username)}" style="margin-top:14px;"><button class="btn primary" id="login-pw-btn" style="width:100%; justify-content:center; margin-top:8px;">Unlock</button><div class="login-error" id="login-pw-err"></div>`;
+    const input = pw.querySelector('#login-pw');
+    async function attempt(){
+      const ok = await verifyPassword(input.value, acct);
+      if(ok){ completeLoginUser(acct.id, false); }
+      else { pw.querySelector('#login-pw-err').textContent = 'Incorrect password'; input.value=''; input.focus(); }
+    }
+    pw.querySelector('#login-pw-btn').addEventListener('click', attempt);
+    input.addEventListener('keydown', e=>{ if(e.key==='Enter') attempt(); });
+    setTimeout(()=>input.focus(), 30);
+  }));
+  card.querySelector('#login-add').addEventListener('click', ()=>renderLoginScreen({mode:'create'}));
+}
+
+function renderSupabaseAuth(card, mode){
+  const signingUp = mode === 'signup';
+  card.innerHTML = `
+    <div class="login-avatar">🌸</div>
+    <div class="login-name">${signingUp ? 'Create your account' : 'Sign in to Zen OS'}</div>
+    ${signingUp ? '<input class="login-input" id="cloud-username" placeholder="Username (3-20 characters)" maxlength="20" autocomplete="username">' : ''}
+    <input class="login-input" id="cloud-identity" type="text" placeholder="Username or email" autocomplete="username">
+    ${signingUp ? '<input class="login-input" id="cloud-name" placeholder="Display name" maxlength="40" autocomplete="name">' : ''}
+    <input class="login-input" id="cloud-password" type="password" placeholder="Password" autocomplete="${signingUp ? 'new-password' : 'current-password'}">
+    <button class="btn primary" id="cloud-submit" style="width:100%; justify-content:center; margin-top:4px;">${signingUp ? 'Create Account' : 'Sign In'}</button>
+    ${signingUp ? '' : '<button class="login-switch" id="cloud-forgot">Forgot password?</button>'}
+    <button class="login-switch" id="cloud-toggle">${signingUp ? 'Back to sign in' : 'Create an account'}</button>
+    <div class="login-error" id="cloud-auth-message" role="status"></div>
+  `;
+  const identityInput = card.querySelector('#cloud-identity');
+  const passwordInput = card.querySelector('#cloud-password');
+  const usernameInput = card.querySelector('#cloud-username');
+  const nameInput = card.querySelector('#cloud-name');
+  const submitButton = card.querySelector('#cloud-submit');
+  const message = card.querySelector('#cloud-auth-message');
+  async function submit(){
+    const identity = identityInput.value.trim();
+    const password = passwordInput.value;
+    const username = usernameInput?.value.trim().toLowerCase();
+    const displayName = nameInput?.value.trim();
+    if(!identity || !password || (signingUp && (!username || !displayName))){
+      message.textContent = signingUp ? 'Enter a username, display name, email, and password.' : 'Enter your username or email and password.';
+      return;
+    }
+    if(signingUp && !/^[a-z0-9][a-z0-9_.-]{2,19}$/.test(username)){
+      message.textContent = 'Username must be 3-20 characters using letters, numbers, dots, hyphens, or underscores.';
+      return;
+    }
+    submitButton.disabled = true;
+    message.textContent = '';
+    try{
+      if(signingUp){
+        const { data, error } = await supabaseClient.auth.signUp({
+          email: identity,
+          password,
+          options: { data: { username, display_name: displayName } }
+        });
+        if(error) throw error;
+        if(data.session && data.user){
+          await startSupabaseSession(data.user, true);
+        } else {
+          message.textContent = 'Check your email to confirm your account, then sign in.';
+        }
+      } else {
+        let email = identity;
+        if(!identity.includes('@')){
+          const { data: lookup, error: lookupError } = await supabaseClient.rpc('get_login_email', { p_username: identity });
+          if(lookupError || !lookup) throw new Error('Invalid username/email or password.');
+          email = lookup;
+        }
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if(error) throw error;
+        await startSupabaseSession(data.user, false);
+      }
+    }catch(error){
+      message.textContent = error.message || 'Authentication failed.';
+    }finally{
+      submitButton.disabled = false;
+    }
   }
+  submitButton.addEventListener('click', submit);
+  passwordInput.addEventListener('keydown', event=>{ if(event.key==='Enter') submit(); });
+  identityInput.addEventListener('keydown', event=>{ if(event.key==='Enter') passwordInput.focus(); });
+  card.querySelector('#cloud-forgot')?.addEventListener('click', ()=>renderLoginScreen({mode:'forgot'}));
+  card.querySelector('#cloud-toggle').addEventListener('click', ()=>renderLoginScreen({mode:signingUp ? 'signin' : 'create'}));
+  setTimeout(()=> (signingUp ? usernameInput : identityInput).focus(), 30);
+}
+
+function getAuthRedirectUrl(){
+  const isWebOrigin = window.location.protocol === 'http:' || window.location.protocol === 'https:';
+  if(!isWebOrigin) return SUPABASE_SETTINGS.appUrl || window.location.href;
+  return window.location.href.split('#')[0].split('?')[0];
+}
+
+function renderForgotPassword(card){
+  card.innerHTML = `
+    <div class="login-avatar">🔑</div>
+    <div class="login-name">Reset your password</div>
+    <div class="login-sub">Enter your username or email address.</div>
+    <input class="login-input" id="reset-identity" type="text" placeholder="Username or email" autocomplete="username">
+    <button class="btn primary" id="reset-submit" style="width:100%; justify-content:center; margin-top:4px;">Send reset link</button>
+    <button class="login-switch" id="reset-back">Back to sign in</button>
+    <div class="login-error" id="reset-message" role="status"></div>
+  `;
+  const identityInput = card.querySelector('#reset-identity');
+  const submitButton = card.querySelector('#reset-submit');
+  const message = card.querySelector('#reset-message');
+  async function submit(){
+    const identity = identityInput.value.trim();
+    if(!identity){ message.textContent = 'Enter your username or email.'; return; }
+    submitButton.disabled = true;
+    message.textContent = '';
+    try{
+      let email = identity;
+      if(!identity.includes('@')){
+        const { data, error } = await supabaseClient.rpc('get_login_email', { p_username: identity });
+        if(error || !data) throw new Error('Unable to send reset link.');
+        email = data;
+      }
+      const { error } = await supabaseClient.auth.resetPasswordForEmail(email, { redirectTo: getAuthRedirectUrl() });
+      if(error) throw error;
+      message.textContent = 'If the account exists, a password reset link has been sent.';
+    }catch(error){
+      message.textContent = 'If the account exists, a password reset link has been sent.';
+    }finally{
+      submitButton.disabled = false;
+    }
+  }
+  submitButton.addEventListener('click', submit);
+  identityInput.addEventListener('keydown', event=>{ if(event.key==='Enter') submit(); });
+  card.querySelector('#reset-back').addEventListener('click', ()=>renderLoginScreen({mode:'signin'}));
+  setTimeout(()=>identityInput.focus(), 30);
+}
+
+function renderResetPassword(card){
+  card.innerHTML = `
+    <div class="login-avatar">🔒</div>
+    <div class="login-name">Choose a new password</div>
+    <input class="login-input" id="new-password" type="password" placeholder="New password" autocomplete="new-password">
+    <input class="login-input" id="confirm-password" type="password" placeholder="Confirm new password" autocomplete="new-password">
+    <button class="btn primary" id="update-password" style="width:100%; justify-content:center; margin-top:4px;">Update password</button>
+    <div class="login-error" id="update-password-message" role="status"></div>
+  `;
+  const passwordInput = card.querySelector('#new-password');
+  const confirmInput = card.querySelector('#confirm-password');
+  const submitButton = card.querySelector('#update-password');
+  const message = card.querySelector('#update-password-message');
+  async function update(){
+    if(passwordInput.value.length < 8){ message.textContent = 'Password must be at least 8 characters.'; return; }
+    if(passwordInput.value !== confirmInput.value){ message.textContent = 'Passwords do not match.'; return; }
+    submitButton.disabled = true;
+    const { error } = await supabaseClient.auth.updateUser({ password: passwordInput.value });
+    if(error){
+      message.textContent = error.message || 'Unable to update password.';
+      submitButton.disabled = false;
+      return;
+    }
+    await supabaseClient.auth.signOut();
+    renderLoginScreen({mode:'signin'});
+    const loginMessage = document.getElementById('cloud-auth-message');
+    if(loginMessage) loginMessage.textContent = 'Password updated. Sign in with your new password.';
+  }
+  submitButton.addEventListener('click', update);
+  confirmInput.addEventListener('keydown', event=>{ if(event.key==='Enter') update(); });
+  setTimeout(()=>passwordInput.focus(), 30);
+}
+
+function findLegacyProfileForSupabaseUser(user){
+  const users = loadUsers();
+  if(!users.length) return null;
+  const requestedUsername = String(user.user_metadata?.username || '').trim().toLowerCase();
+  const matchingUser = requestedUsername
+    ? users.find(account=>String(account.username || '').trim().toLowerCase()===requestedUsername)
+    : users.length===1 ? users[0] : null;
+  if(!matchingUser) return null;
+  const legacy = safeJsonParse(localStorage.getItem(userStateKey(matchingUser.id)), null);
+  if(!legacy || !legacy.onboarded) return null;
+  return { username: matchingUser.username, state: validateUserState(legacy) };
+}
+
+async function startSupabaseSession(user, isNew){
+  if(!user) throw new Error('Supabase returned no user for this session.');
+  cloudUser = user;
+  activeUserId = user.id;
+  LS_KEY = userStateKey(user.id);
+  cloudStateReady = false;
+  const localState = loadState();
+  let nextState = localState;
+  const { data, error } = await supabaseClient.from('user_state')
+    .select('state')
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if(error){
+    console.warn('Zen OS could not load cloud state:', error.message);
+    notify('Cloud sync unavailable', 'Using this device’s saved state for now.', '⚠️', '#ffb35c');
+  } else if(data && data.state){
+    nextState = validateUserState(data.state);
+  } else {
+    const legacyProfile = findLegacyProfileForSupabaseUser(user);
+    if(legacyProfile && confirm(`Import the existing local profile for ${legacyProfile.username} into this Supabase account?`)){
+      nextState = legacyProfile.state;
+    }
+  }
+  const metadata = user.user_metadata || {};
+  state = validateUserState(nextState);
+  state.settings.username = metadata.username || user.email?.split('@')[0] || 'User';
+  state.avatarEmoji = metadata.avatar || state.avatarEmoji || '🧑';
+  state.role = 'standard';
+  state.onboarded = true;
+  cloudStateReady = !error;
+  saveState();
+  bootSession();
+  document.getElementById('boot-screen').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'none';
+  notify(isNew ? 'Account created' : 'Welcome back', 'Signed in as ' + state.settings.username, state.avatarEmoji, '#7c6cff');
+}
+
+function renderCreateAccount(card, isFirst){
+  card.innerHTML = `
+    <div class="login-avatar" id="login-avatar-preview">🧑</div>
+    <div class="login-name">${isFirst?'Create your account':'Add an account'}</div>
+    <div class="login-avatar-pick" id="login-avatar-pick">${AVATAR_CHOICES.map((a,i)=>`<div class="av-opt ${i===0?'sel':''}" data-av="${a}">${a}</div>`).join('')}</div>
+    <input class="login-input" id="login-name-input" placeholder="Your name" maxlength="20">
+    <input class="login-input" id="login-pass-input" type="password" placeholder="Password (optional)" style="margin-top:8px;">
+    ${isFirst ? `<div class="login-sub" style="margin-top:10px;">This first account is the administrator.</div>` : `<div class="login-role-pick" style="margin-top:10px;"><button class="pill role-opt sel" data-role="standard">Standard</button><button class="pill role-opt" data-role="admin">Administrator</button></div>`}
+    <button class="btn primary" id="login-create-btn" style="width:100%; justify-content:center; margin-top:12px;">Create Account</button>
+    ${isFirst ? '' : `<div class="login-switch" id="login-back">Back to accounts</div>`}
+    <div class="login-error" id="login-create-err"></div>
+  `;
+  let chosenAv = AVATAR_CHOICES[0];
+  let chosenRole = isFirst ? 'admin' : 'standard';
+  card.querySelectorAll('.av-opt').forEach(el=>el.addEventListener('click', ()=>{
+    card.querySelectorAll('.av-opt').forEach(x=>x.classList.remove('sel'));
+    el.classList.add('sel'); chosenAv = el.dataset.av;
+    card.querySelector('#login-avatar-preview').textContent = chosenAv;
+  }));
+  card.querySelectorAll('.role-opt').forEach(el=>el.addEventListener('click', ()=>{
+    card.querySelectorAll('.role-opt').forEach(x=>x.classList.remove('sel'));
+    el.classList.add('sel'); chosenRole = el.dataset.role;
+  }));
+  const nameInput = card.querySelector('#login-name-input');
+  const passInput = card.querySelector('#login-pass-input');
+  const back = card.querySelector('#login-back');
+  if(back) back.addEventListener('click', ()=>renderLoginScreen({mode:'select'}));
+  async function submit(){
+    const name = nameInput.value.trim();
+    if(!name){ card.querySelector('#login-create-err').textContent = 'Please enter a name.'; nameInput.focus(); return; }
+    const id = uid('user');
+    const acct = { id, username: name, avatar: chosenAv, role: chosenRole, salt:null, passHash:null };
+    if(passInput.value){
+      if(crypto && crypto.subtle){ const { hash, salt } = await hashPassword(passInput.value); acct.passHash = hash; acct.salt = salt; }
+      else { card.querySelector('#login-create-err').textContent = 'Passwords need a secure (https/localhost) context; account created without one.'; }
+    }
+    const users = loadUsers(); users.push(acct); saveUsers(users);
+    completeLoginUser(id, true);
+  }
+  card.querySelector('#login-create-btn').addEventListener('click', submit);
+  passInput.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
+  nameInput.addEventListener('keydown', e=>{ if(e.key==='Enter') passInput.focus(); });
+  setTimeout(()=>nameInput.focus(), 50);
+}
+
+// Lock screen: re-authenticates the *current* user without tearing down the
+// running session (kernel, windows and state stay live). Unlocking just hides
+// the overlay; "Switch user" fully signs out with a reload.
+function renderLockScreen(card, userId){
+  if(supabaseClient && cloudUser){
+    const user = currentUser();
+    const email = cloudUser.email || '';
+    card.innerHTML = `
+      <div class="login-avatar">${user.avatar}</div>
+      <div class="login-name">${escapeHtml(user.username)}</div>
+      <div class="login-sub">${escapeHtml(email)}</div>
+      <input class="login-input" id="login-lock-pw" type="password" placeholder="Password" autocomplete="current-password" style="margin-top:12px;">
+      <button class="btn primary" id="login-unlock-btn" style="width:100%; justify-content:center; margin-top:10px;">Unlock</button>
+      <div class="login-switch" id="login-switch-user">Switch account</div>
+      <div class="login-error" id="login-lock-err"></div>
+    `;
+    const input = card.querySelector('#login-lock-pw');
+    async function unlock(){
+      const { error } = await supabaseClient.auth.signInWithPassword({ email, password: input.value });
+      if(!error) document.getElementById('login-screen').style.display = 'none';
+      else { card.querySelector('#login-lock-err').textContent = 'Incorrect password'; input.value = ''; input.focus(); }
+    }
+    card.querySelector('#login-unlock-btn').addEventListener('click', unlock);
+    input.addEventListener('keydown', event=>{ if(event.key==='Enter') unlock(); });
+    card.querySelector('#login-switch-user').addEventListener('click', async ()=>{
+      await supabaseClient.auth.signOut();
+      localStorage.removeItem(ACTIVE_USER_KEY);
+      location.reload();
+    });
+    setTimeout(()=>input.focus(), 30);
+    return;
+  }
+  const acct = loadUsers().find(u=>u.id===userId) || currentUser();
+  if(!acct) return renderAccountPicker(card, loadUsers());
+  card.innerHTML = `
+    <div class="login-avatar">${acct.avatar||'🧑'}</div>
+    <div class="login-name">${escapeHtml(acct.username)}</div>
+    <div class="login-sub">${acct.role==='admin'?'Administrator':'Standard'}</div>
+    ${acct.passHash ? `<input class="login-input" id="login-lock-pw" type="password" placeholder="Password" style="margin-top:12px;">` : ''}
+    <button class="btn primary" id="login-unlock-btn" style="width:100%; justify-content:center; margin-top:10px;">Unlock</button>
+    <div class="login-switch" id="login-switch-user">Switch user</div>
+    <div class="login-error" id="login-lock-err"></div>
+  `;
+  const input = card.querySelector('#login-lock-pw');
+  async function attempt(){
+    const ok = await verifyPassword(input ? input.value : '', acct);
+    if(ok){ document.getElementById('login-screen').style.display='none'; }
+    else { card.querySelector('#login-lock-err').textContent = 'Incorrect password'; if(input){ input.value=''; input.focus(); } }
+  }
+  card.querySelector('#login-unlock-btn').addEventListener('click', attempt);
+  if(input) input.addEventListener('keydown', e=>{ if(e.key==='Enter') attempt(); });
+  card.querySelector('#login-switch-user').addEventListener('click', ()=>{ localStorage.removeItem(ACTIVE_USER_KEY); location.reload(); });
+  setTimeout(()=>{ if(input) input.focus(); }, 30);
+}
+
+// Loads the chosen user's isolated state (their own filesystem, notes, apps,
+// settings) and starts their desktop session.
+function completeLoginUser(id, isNew){
+  activeUserId = id;
+  try{ localStorage.setItem(ACTIVE_USER_KEY, id); }catch(e){}
+  LS_KEY = userStateKey(id);
+  state = loadState();
+  const acct = currentUser();
+  if(acct){
+    state.settings.username = acct.username;
+    state.avatarEmoji = acct.avatar;
+    state.role = acct.role;
+    state.onboarded = true;
+  }
+  saveState();
+  bootSession();
+  document.getElementById('login-screen').style.display='none';
+  notify(isNew?'Account created':'Welcome back', (isNew?'Welcome to Zen OS, ':'')+state.settings.username, state.avatarEmoji||'🌸', '#7c6cff');
 }
 
 /* ---------------------- CUSTOM CURSOR (real animated GIF, always on) ---------------------- */
@@ -2859,9 +4283,50 @@ function tryRealBattery(){
 setInterval(tickBattery, 60000);
 
 /* ---------------------- INIT ---------------------- */
-function init(){
-  spotifyHandleCallback().catch(error=>notify('Spotify login failed',error.message,'⚠️','#ff5c5c'));
+// One-time migration: if there's a legacy single-user save but no account
+// registry yet, promote it to the first (administrator) account so nothing is
+// lost when the multi-user system takes over.
+function migrateLegacyAccount(){
+  if(loadUsers().length) return;
+  let legacy = null;
+  try{ legacy = JSON.parse(localStorage.getItem('zenos_state_v1') || 'null'); }catch(e){}
+  if(legacy && legacy.onboarded){
+    const id = uid('user');
+    saveUsers([{ id, username: (legacy.settings && legacy.settings.username) || 'User', avatar: legacy.avatarEmoji || '🧑', role:'admin', salt:null, passHash:null }]);
+    legacy.role = 'admin';
+    try{ localStorage.setItem(userStateKey(id), JSON.stringify(legacy)); }catch(e){}
+  }
+}
+
+function restoreActiveUserSession(){
+  const rememberedId = localStorage.getItem(ACTIVE_USER_KEY);
+  if(!rememberedId) return false;
+  const users = loadUsers();
+  const user = users.find(u=>u.id===rememberedId);
+  if(!user) {
+    localStorage.removeItem(ACTIVE_USER_KEY);
+    return false;
+  }
+  activeUserId = rememberedId;
+  LS_KEY = userStateKey(rememberedId);
+  state = loadState();
+  state.settings.username = user.username;
+  state.avatarEmoji = user.avatar;
+  state.role = user.role;
+  state.onboarded = true;
+  saveState();
+  const boot = document.getElementById('boot-screen');
+  const login = document.getElementById('login-screen');
+  if(boot) boot.style.display = 'none';
+  if(login) login.style.display = 'none';
+  return true;
+}
+
+// Everything below depends on the signed-in user's state, so it runs after a
+// successful login (and can be re-run when a session begins).
+function bootSession(){
   ensureWallpaperFiles();
+  hydrateCameraPhotos();
   if(window.ZenKernel) ZenKernel.boot(state);
   applyWallpaper();
   applyCursor();
@@ -2872,6 +4337,39 @@ function init(){
   tryRealBattery();
   refreshNetworkUi();
   applyDisplayEffects();
-  runBootSequence();
+}
+
+function init(){
+  spotifyHandleCallback().catch(error=>notify('Spotify login failed',error.message,'⚠️','#ff5c5c'));
+  if(!supabaseClient){
+    migrateLegacyAccount();
+    if(restoreActiveUserSession()){
+      bootSession();
+      return;
+    }
+    runBootSequence();
+    return;
+  }
+  supabaseClient.auth.onAuthStateChange((event, session)=>{
+    if(event !== 'PASSWORD_RECOVERY' || !session) return;
+    const boot = document.getElementById('boot-screen');
+    const login = document.getElementById('login-screen');
+    if(boot) boot.style.display = 'none';
+    if(login){
+      login.style.display = 'flex';
+      renderLoginScreen({mode:'reset'});
+    }
+  });
+  supabaseClient.auth.getSession().then(async ({ data, error })=>{
+    if(error) throw error;
+    if(data.session?.user){
+      await startSupabaseSession(data.session.user, false);
+      return;
+    }
+    runBootSequence();
+  }).catch(error=>{
+    console.warn('Zen OS could not restore the Supabase session:', error.message);
+    runBootSequence();
+  });
 }
 init();

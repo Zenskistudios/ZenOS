@@ -41,7 +41,7 @@
   let ipcChannel = null;
 
   const kernel = {
-    version: '0.1.0-sim',
+    version: '1.8.1-sim',
     states: STATES,
     config: { totalMemory: 512 * 1024 * 1024 },
     scheduler: { algorithm: 'round-robin', timeSlice: 100, readyQueue: [], sleepingQueue: [], terminated: [], runningPid: null, ticks: 0 },

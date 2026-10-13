@@ -1,20 +1,20 @@
 # Zen OS
-🌸Zen OS is a browser-based operating system simulator built with HTML, CSS, Javascript.
 
-My ideal is Designed to Recreate Experience of using A desktop operating system directly inside a web browser. it includes a desktop environment, application windows, a taskbar, system settings, a virtual filesystem, process management, and several built-in applications.
+Zen OS is a browser-based desktop environment built with HTML, CSS, and JavaScript. I’m building it to explore how much of a desktop operating system experience I can recreate inside a browser.
 
-The goal of Zen OS is not to replace a real operating system, but to demonstrate how many operating system concepts can be Recreated and simulated using modern web technologies.
+It is not meant to replace a real operating system. The project is mainly for experimenting with window management, browser APIs, local data, and small web applications.
 
-## Live Demo
+## Live demo
 
-(https://zen-os-inky.vercel.app/)
+https://zen-os-inky.vercel.app/
 
 ## Features
-![alt text](image.png)
+
+![Zen OS desktop](image.png)
 
 ### Desktop Environment
 
-Zen OS provides a complete desktop-style interface with:
+The desktop currently includes:
 
 - Desktop icons
 - Application launcher
@@ -26,9 +26,7 @@ Zen OS provides a complete desktop-style interface with:
 - Desktop context menu
 - Wallpapers
   
-### Built-in Applications
-
-Zen OS comes with several application built into  the systems:
+### Built-in applications
 
 - File Manager
 - Text Editor
@@ -40,13 +38,15 @@ Zen OS comes with several application built into  the systems:
 - Task Manager
 - Software Hub
 - Zen Browse
-- Playtube(Youtube)
-- Wavelength(Spotify)
+- PlayTube (YouTube)
+- Wavelength (Spotify)
+- Share
 
-### Virtual Filesystem
-![alt text](image-1.png)
+### Virtual filesystem
 
-The system includes a simulated filesystem that allow users to:
+![Zen OS file manager](image-1.png)
+
+The file manager provides a small filesystem stored in the browser. It supports:
 - Create folders
 - Create text files
 - Open files
@@ -55,12 +55,10 @@ The system includes a simulated filesystem that allow users to:
 - Delete files
 - Navigate between folders
 
-File and system can be stored locally in the browser.
 
-### Window Management
-![alt text](image-2.png)
+### Window management
 
-Applications run inside their own windows.
+![Zen OS windows](image-2.png)
 
 Users can:
 -  Open multiple applications
@@ -68,13 +66,13 @@ Users can:
 -  Minimize windows
 -  Maximize windows
 -  Close windows
--  Switch between running applications
--  
+- Switch between running applications
 
-### System Settings
-![alt text](image-3.png)
+### Settings
 
-Zen OS includes a settings application with different system options such as:
+![Zen OS settings](image-3.png)
+
+Settings currently covers:
 - Display
 - Sound
 - Notifications
@@ -82,84 +80,77 @@ Zen OS includes a settings application with different system options such as:
 - Privacy
 - Storage
 
-Some systems features, such as Wifi and Bluetooth, are simulated inside the browser.
+Wi-Fi is simulated. Bluetooth uses the browser's Web Bluetooth device picker when supported. The Share app uses an encrypted WebRTC connection to transfer photos, documents, videos, and other files directly between two browsers.
 
-### Task Manager
+### Task manager
 
-The Task Manager provides a view of application currently running in Zen OS.
+Task Manager shows the applications and processes currently running in the session.
 
 ### Software Hub
-![alt text](image-4.png)
+![Zen OS Software Hub](image-4.png)
 
-The software Hub allows applications and games to installed and removed from the system.
+Software Hub lets users install and remove the web applications and games listed in the catalog. Installation is simulated; some apps open real websites or embedded services.
 
-The installation process is simulated to make it feel more like installing software on a real operating systems and working on it is still progress. 
+### Games
+![Zen OS games](image-5.png)
 
-### Games 
-![alt text](image-5.png)
+The Games section contains browser games that can be installed and launched from Zen OS. Current entries include Cross or Crash, Memory Game, Space Shooter, Flappy Bird, The Exit, You Are Not Alone, and Lagos Life.
 
-Zen OS also includes a games section with several games available to install and launch and working on it is still progress also.
 
-Some of the current games include:
+### Web applications
+![Zen OS web applications](image-6.png)
 
--  Nebula Crash
--  Tidepool Tactics
--  Ember Keep
--  Pixel Runner
--  Glasslands
--  Driftline
--  
-
-### Web Applications
-![alt text](image-6.png)
-
-Soe applications connect to real web services.
+Some parts of Zen OS connect to real services.
 
 **PlayTube** uses YouTube embeds for playing videos.
 
 **Wavelength** uses Spotify embeds for music.
 
-**Zen Browse** can load websites directly inside the desktop environment.
+**Zen Browse** can load websites inside the desktop environment.
 
 Because of browser security restrictions, some websites may not work correctly when loaded inside Zen Browse.
 
-## Data Storage
+## Storage and accounts
 
-Zen OS does not use a backend.
+Zen OS automatically saves changed state locally and also saves when the page is hidden or closed. When Supabase is configured, the signed-in user's state is synced to the cloud in the background. Without Supabase, the app works as a local-only application.
 
-Most of the system runs directly in the browser, with data such as files, notes, settings, and installed applications stored using browser storage.
+The local copy can be removed if browser storage is cleared. Cloud sync currently stores the user's state as one JSON document, so simultaneous edits on two devices use the most recent save.
 
-Clearing the browser's stored data can remove this information.
+### Supabase setup
 
-## Technologies Used
+Step 1. I create a Supabase project and open the SQL Editor.
+Step 2. Then run `supabase/schema.sql`.
+Step 3. I put the project URL and public anon key in `supabase-config.js`.
+Step 4. After i added the deployed site and local development URL under Supabase Authentication → URL Configuration.
+Step 5. Then run Zen OS over HTTPS or localhost. Password recovery does not work reliably from a `file://` URL.
 
--  HTML
--  CSS
--  JavaScript
--  SVG
--  Browser APIS
--  Local Storage
+The SQL i created creates the `user_state` table, row-level security policies, username reservations, username login support, and password recovery support. Usernames are case-insensitive and stay unavailable while their account exists. Deleting the original account releases the username. Supabase Realtime is used only to exchange WebRTC connection details; the transferred files do not pass through Supabase.
 
-## Project Status
+My app never uses a Supabase service-role key in the browser. When an older local profile matches the username of a new Supabase account, Zen OS offers to import it during the first sign-in. Users can also download or restore a profile from **Settings → Storage → Backup**. Backups are JSON files and can be kept before changing storage providers or clearing browser data.
 
-Zen OS is still a work in progress.
+## Built with
 
-I'm continuing to work on the system, add new applications, improve existing features, fix bugs, and experiment with new ideas.
+- HTML
+- CSS
+- JavaScript
+- SVG
+- Browser APIs
+- Local Storage and IndexedDB
+- Supabase Auth and PostgreSQL (optional)
 
-## Future Plans
+## Status
 
-Some of the things I would like to add or improve include:
+Zen OS is still under active development. I’m currently working on making window management, local and cloud storage, sign-in, and the built-in apps more reliable.
 
-* More built-in applications
-* More games
-* Better file management
-* More desktop customization
-* Camera support
-* More browser features
-* Bluetooth-style device controls
-* More media features
-* Zen AI assistant
-* More system interactions
+## Possible future work
+
+- Planning on adding more built-in applications and games
+- Creating a better file management
+- More desktop customization
+- More browser and media features
+- Improved hardware support where browser APIs allow it
+- Optional encrypted backups and better conflict handling
+- Bringing ai assitance called Owl
 
 ## Author
 
