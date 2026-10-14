@@ -152,6 +152,15 @@ Zen OS is still under active development. I’m currently working on making wind
 - Optional encrypted backups and better conflict handling
 - Bringing ai assitance called Owl
 
+## Work done today
+Today i firstly rearrange the image in the readme into a folder so it could be well arrange, fixed the bug in the script.js file that was causing the application to crash when a user inputted invalid data. The issue was related to improper error handling, which has now been addressed by adding validation checks and appropriate error messages
+
+Then i connected the Supabase email confirmation flow to Brevo SMTP and verified the sender email. I also fixed an SMTP error caused by Brevo blocking Supabase's server IP addresses.
+
+I updated the signup form so it clearly asks for an email address. I checked the signup logs while testing and confirmed that the problem was with email delivery, not the signup form itself.
+
+I also worked on the security side of the app by tightening profile imports, fixing the missing-user admin check, improving storage error handling, and reducing permissions on the Zen Browse iframes. Cloud accounts now use the standard role by default instead of allowing public users to choose administrator access.
+
 ## Author
 
 **Taiwo Jegede**
