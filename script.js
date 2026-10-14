@@ -1,10 +1,11 @@
 /* =====================================================================
-   ZEN OS — frontend-only simulated desktop environment
-   All state persisted to localStorage. Zero backend / network calls,
-   EXCEPT for the apps noted below, which use real, live services:
+   ZEN OS — browser-based desktop environment
+   Most state is persisted locally for offline use. Optional Supabase
+   authentication and cloud synchronization are enabled when configured.
+   Individual apps may also call external services:
      - PlayTube    → embeds the real YouTube iframe player (youtube.com)
      - Wavelength  → embeds the real Spotify iframe player (open.spotify.com)
-     - Zen Browse → iframes the real live web (subject to sites that
+      - Zen Browse → frames the real live web (subject to sites that
        block embedding via X-Frame-Options/CSP — a hard browser platform
        limit, not a bug here; those sites open in a new tab instead)
 ===================================================================== */
@@ -37,9 +38,29 @@ function ensureArray(value, fallback){ return Array.isArray(value) ? value : (fa
 function loadUsers(){
   const users = safeJsonParse(localStorage.getItem(USERS_KEY), []);
   if(!Array.isArray(users)) return [];
-  return users.filter(u => u && typeof u.id === 'string' && typeof u.username === 'string');
+  return users.filter(u => u && typeof u.id === 'string' && typeof u.username === 'string')
+    .map(u=>({
+      ...u,
+      username: u.username.trim().slice(0,20),
+      avatar: typeof u.avatar === 'string' && u.avatar.length <= 16 ? u.avatar : '🧑',
+      role: u.role === 'admin' ? 'admin' : 'standard',
+      passHash: typeof u.passHash === 'string' ? u.passHash : null,
+      salt: typeof u.salt === 'string' ? u.salt : null
+    }));
 }
-function saveUsers(users){ try{ localStorage.setItem(USERS_KEY, JSON.stringify(users)); }catch(e){} }
+let lastStorageWarning = 0;
+function reportStorageFailure(operation, error){
+  console.error(`Zen OS could not ${operation}:`, error);
+  if(Date.now() - lastStorageWarning < 30000) return;
+  lastStorageWarning = Date.now();
+  setTimeout(()=>{
+    if(typeof notify === 'function') notify('Storage unavailable', `Zen OS could not ${operation}. Free browser storage and try again.`, '⚠️', '#ff5c5c');
+  }, 0);
+}
+function saveUsers(users){
+  try{ localStorage.setItem(USERS_KEY, JSON.stringify(users)); return true; }
+  catch(e){ reportStorageFailure('save account data', e); return false; }
+}
 let activeUserId = null;
 function currentUser(){
   if(cloudUser){
@@ -92,8 +113,8 @@ function validateUserState(rawState){
   };
 }
 function safeStateWrite(key, value){
-  try{ localStorage.setItem(key, JSON.stringify(value)); }
-  catch(e){}
+  try{ localStorage.setItem(key, JSON.stringify(value)); return true; }
+  catch(e){ reportStorageFailure('save a state backup', e); return false; }
 }
 function saveStateSnapshot(label = 'latest'){
   if(!activeUserId && !state) return;
@@ -122,23 +143,42 @@ function exportCurrentUserProfile(){
   return JSON.stringify(payload, null, 2);
 }
 function importUserProfileFromJson(rawText){
+  lastProfileImportError = '';
   try{
     const parsed = JSON.parse(rawText);
-    if(!parsed || typeof parsed !== 'object') return false;
+    if(!parsed || typeof parsed !== 'object' || !parsed.state || typeof parsed.state !== 'object') throw new Error('The backup must contain a valid state object.');
     const nextState = validateUserState(parsed.state || {});
-    state = nextState;
-    if(!cloudUser && parsed.user && parsed.user.id){
+    if(parsed.user !== null && parsed.user !== undefined){
+      if(cloudUser) throw new Error('Cloud account details cannot be restored from a local backup.');
+      const importedUser = parsed.user;
+      if(typeof importedUser !== 'object' || typeof importedUser.id !== 'string' || importedUser.id !== activeUserId){
+        throw new Error('This backup belongs to a different local account.');
+      }
+      if(typeof importedUser.username !== 'string' || !/^[^\u0000-\u001f\u007f]{1,20}$/.test(importedUser.username.trim())){
+        throw new Error('The backup contains an invalid username.');
+      }
+      if(typeof importedUser.avatar !== 'string' || importedUser.avatar.length > 16){
+        throw new Error('The backup contains an invalid avatar.');
+      }
       const users = loadUsers();
-      const existing = users.findIndex(u=>u.id===parsed.user.id);
-      if(existing >= 0) users[existing] = { ...users[existing], ...parsed.user }; else users.push(parsed.user);
-      saveUsers(users);
-      activeUserId = parsed.user.id;
-      LS_KEY = userStateKey(parsed.user.id);
+      const existing = users.findIndex(u=>u.id===activeUserId);
+      if(existing < 0) throw new Error('The active local account no longer exists.');
+      // Role, password hash, and salt are trusted account properties; never import them.
+      users[existing] = { ...users[existing], username: importedUser.username.trim(), avatar: importedUser.avatar };
+      if(!saveUsers(users)) throw new Error('The account data could not be saved.');
     }
-    saveState();
+    state = nextState;
+    const trustedUser = currentUser();
+    if(trustedUser){
+      state.role = trustedUser.role;
+      state.settings.username = trustedUser.username;
+      state.avatarEmoji = trustedUser.avatar;
+    }
+    if(!saveState()) throw new Error('The profile state could not be saved.');
     return true;
-  }catch(e){ return false; }
+  }catch(e){ lastProfileImportError = e.message || 'The backup could not be imported.'; console.warn('Zen OS profile import failed:', e); return false; }
 }
+let lastProfileImportError = '';
 function downloadCurrentUserProfile(){
   const data = exportCurrentUserProfile();
   const blob = new Blob([data], { type: 'application/json' });
@@ -147,7 +187,7 @@ function downloadCurrentUserProfile(){
   a.href = url; a.download = `zenos-profile-${activeUserId || 'guest'}.json`; a.click();
   URL.revokeObjectURL(url);
 }
-function isAdmin(){ const u = currentUser(); return !u || u.role === 'admin'; }
+function isAdmin(){ const u = currentUser(); return !!u && u.role === 'admin'; }
 // Real PBKDF2-style hashing of account passwords via Web Crypto (SHA-256 with
 // a per-account random salt). Passwords are never stored in the clear.
 async function hashPassword(password, saltHex){
@@ -738,9 +778,10 @@ function saveState(){
     localStorage.setItem(STORAGE_SCHEMA_KEY, JSON.stringify(STORAGE_SCHEMA_VERSION));
     localStorage.setItem(LS_KEY, serialized);
     lastPersistedState = serialized;
-  }catch(e){}
+  }catch(e){ reportStorageFailure('save your profile', e); return false; }
   saveStateSnapshot('latest');
   queueCloudStateSync();
+  return true;
 }
 
 function autosaveState(){
@@ -1855,7 +1896,7 @@ function renderWebApp(body, w, sw){
       if(retry) retry.addEventListener('click', ()=>{ inst.blocked=false; drawFrame(); });
       return;
     }
-    host.innerHTML = `<iframe src="${escapeHtml(sw.url)}" style="width:100%; height:100%; border:0; display:block; flex:1;" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"></iframe>`;
+    host.innerHTML = `<iframe src="${escapeHtml(sw.url)}" style="width:100%; height:100%; border:0; display:block; flex:1;" referrerpolicy="no-referrer" sandbox="allow-scripts allow-forms allow-popups allow-downloads"></iframe>`;
     const frame = host.querySelector('iframe');
     frame.addEventListener('error', ()=>{ inst.blocked = true; drawFrame(); });
   }
@@ -2773,7 +2814,7 @@ function renderSettingsApp(body, w){
         ${row('Services', `<span style="font-size:12px; color:var(--text-2);">${ZenKernel.services.list().length} loaded</span>`)}
         <h3 style="font-family:var(--font-display); margin:18px 0 10px;">Accounts</h3>
         ${isAdmin() ? `<p style="font-size:10.5px; color:var(--text-2); margin-bottom:10px;">Each account has its own isolated files, notes, apps and settings.</p>` : `<p style="font-size:10.5px; color:var(--text-3); margin-bottom:10px;">Only an administrator can manage other accounts.</p>`}
-        <div class="card">${users.map(u=>`<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--panel-border);"><span style="font-size:18px;">${u.avatar||'🧑'}</span><span style="flex:1;"><b style="font-size:12px;">${escapeHtml(u.username)}</b><div style="font-size:10px; color:var(--text-3);">${u.role==='admin'?'Administrator':'Standard'}${u.id===activeUserId?' · this account':''}${u.passHash?' · 🔒':''}</div></span>${isAdmin() && u.id!==activeUserId ? `<button class="pill" data-remove-user="${u.id}">Remove</button>` : ''}</div>`).join('')}</div>`;
+        <div class="card">${users.map(u=>`<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--panel-border);"><span style="font-size:18px;">${escapeHtml(String(u.avatar||'🧑'))}</span><span style="flex:1;"><b style="font-size:12px;">${escapeHtml(u.username)}</b><div style="font-size:10px; color:var(--text-3);">${u.role==='admin'?'Administrator':'Standard'}${u.id===activeUserId?' · this account':''}${u.passHash?' · 🔒':''}</div></span>${isAdmin() && u.id!==activeUserId ? `<button class="pill" data-remove-user="${u.id}">Remove</button>` : ''}</div>`).join('')}</div>`;
     } else if(inst.section==='kernel'){
       const snapshot = ZenKernel.snapshot();
       html = `<h3 style="font-family:var(--font-display); margin-bottom:14px;">Kernel Debug Console</h3>
@@ -2826,7 +2867,7 @@ function renderSettingsApp(body, w){
         const reader = new FileReader();
         reader.onload = ()=>{
           const imported = importUserProfileFromJson(String(reader.result || ''));
-          notify(imported ? 'Backup restored' : 'Import failed', imported ? 'Your profile will reload now.' : 'The selected file is not a valid Zen OS backup.', imported ? '✅' : '⚠️', imported ? '#4ade80' : '#ff5c5c');
+          notify(imported ? 'Backup restored' : 'Import failed', imported ? 'Your profile will reload now.' : (lastProfileImportError || 'The selected file is not a valid Zen OS backup.'), imported ? '✅' : '⚠️', imported ? '#4ade80' : '#ff5c5c');
           if(imported) setTimeout(()=>location.reload(), 500);
         };
         reader.readAsText(file);
@@ -2913,7 +2954,12 @@ function renderTaskManager(body, w){
 function normalizeUrl(raw){
   raw = (raw||'').trim();
   if(!raw) return '';
-  if(/^https?:\/\//i.test(raw)) return raw;
+  if(/^https?:\/\//i.test(raw)){
+    try{
+      const url = new URL(raw);
+      return url.hostname ? url.href : '';
+    }catch(e){ return ''; }
+  }
   // looks like a domain/URL without a scheme (has a dot, no spaces)
   if(/^[\w-]+(\.[\w-]+)+([:\/?#].*)?$/.test(raw) && !raw.includes(' ')){
     return 'https://' + raw;
@@ -2951,7 +2997,9 @@ function renderBrowser(body, w){
       el.className = 'zb-frame';
       el.style.display = 'none';
       el.referrerPolicy = 'no-referrer';
-      el.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+      // Keep browsing usable, but leave out allow-same-origin and
+      // allow-popups-to-escape-sandbox for untrusted third-party pages.
+      el.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups');
       el.src = tab.url;
       // Note on detection: browsers don't fire a script-visible signal when a
       // cross-origin site's X-Frame-Options/CSP refuses to render inside a frame
@@ -3853,7 +3901,7 @@ function renderAccountPicker(card, users){
     <div class="login-name" style="margin-bottom:16px;">Choose an account</div>
     <div class="login-users">${users.map(u=>`
       <button class="login-user" data-user="${u.id}">
-        <span class="login-user-av">${u.avatar||'🧑'}</span>
+        <span class="login-user-av">${escapeHtml(String(u.avatar||'🧑'))}</span>
         <span class="login-user-info"><span class="login-user-name">${escapeHtml(u.username)}</span><span class="login-user-role">${u.role==='admin'?'Administrator':'Standard'}${u.passHash?' · 🔒':''}</span></span>
       </button>`).join('')}</div>
     <button class="login-switch" id="login-add">+ Add account</button>
@@ -3886,7 +3934,7 @@ function renderSupabaseAuth(card, mode){
     <div class="login-avatar">🌸</div>
     <div class="login-name">${signingUp ? 'Create your account' : 'Sign in to Zen OS'}</div>
     ${signingUp ? '<input class="login-input" id="cloud-username" placeholder="Username (3-20 characters)" maxlength="20" autocomplete="username">' : ''}
-    <input class="login-input" id="cloud-identity" type="text" placeholder="Username or email" autocomplete="username">
+    <input class="login-input" id="cloud-identity" type="${signingUp ? 'email' : 'text'}" placeholder="${signingUp ? 'Email address' : 'Username or email'}" autocomplete="${signingUp ? 'email' : 'username'}">
     ${signingUp ? '<input class="login-input" id="cloud-name" placeholder="Display name" maxlength="40" autocomplete="name">' : ''}
     <input class="login-input" id="cloud-password" type="password" placeholder="Password" autocomplete="${signingUp ? 'new-password' : 'current-password'}">
     <button class="btn primary" id="cloud-submit" style="width:100%; justify-content:center; margin-top:4px;">${signingUp ? 'Create Account' : 'Sign In'}</button>
@@ -3907,6 +3955,10 @@ function renderSupabaseAuth(card, mode){
     const displayName = nameInput?.value.trim();
     if(!identity || !password || (signingUp && (!username || !displayName))){
       message.textContent = signingUp ? 'Enter a username, display name, email, and password.' : 'Enter your username or email and password.';
+      return;
+    }
+    if(signingUp && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity)){
+      message.textContent = 'Enter a valid email address.';
       return;
     }
     if(signingUp && !/^[a-z0-9][a-z0-9_.-]{2,19}$/.test(username)){
@@ -4115,10 +4167,25 @@ function renderCreateAccount(card, isFirst){
     const id = uid('user');
     const acct = { id, username: name, avatar: chosenAv, role: chosenRole, salt:null, passHash:null };
     if(passInput.value){
-      if(crypto && crypto.subtle){ const { hash, salt } = await hashPassword(passInput.value); acct.passHash = hash; acct.salt = salt; }
-      else { card.querySelector('#login-create-err').textContent = 'Passwords need a secure (https/localhost) context; account created without one.'; }
+      if(globalThis.crypto && globalThis.crypto.subtle){
+        try{
+          const { hash, salt } = await hashPassword(passInput.value);
+          acct.passHash = hash; acct.salt = salt;
+        }catch(error){
+          console.error('Zen OS could not hash the account password:', error);
+          card.querySelector('#login-create-err').textContent = 'This browser could not securely protect the password. Account not created.';
+          return;
+        }
+      } else {
+        card.querySelector('#login-create-err').textContent = 'This browser does not support secure password protection. Account not created.';
+        return;
+      }
     }
-    const users = loadUsers(); users.push(acct); saveUsers(users);
+    const users = loadUsers(); users.push(acct);
+    if(!saveUsers(users)){
+      card.querySelector('#login-create-err').textContent = 'The account could not be saved. Free browser storage and try again.';
+      return;
+    }
     completeLoginUser(id, true);
   }
   card.querySelector('#login-create-btn').addEventListener('click', submit);
@@ -4162,7 +4229,7 @@ function renderLockScreen(card, userId){
   const acct = loadUsers().find(u=>u.id===userId) || currentUser();
   if(!acct) return renderAccountPicker(card, loadUsers());
   card.innerHTML = `
-    <div class="login-avatar">${acct.avatar||'🧑'}</div>
+    <div class="login-avatar">${escapeHtml(String(acct.avatar||'🧑'))}</div>
     <div class="login-name">${escapeHtml(acct.username)}</div>
     <div class="login-sub">${acct.role==='admin'?'Administrator':'Standard'}</div>
     ${acct.passHash ? `<input class="login-input" id="login-lock-pw" type="password" placeholder="Password" style="margin-top:12px;">` : ''}
