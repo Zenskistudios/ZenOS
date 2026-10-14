@@ -3969,6 +3969,14 @@ function renderSupabaseAuth(card, mode){
     message.textContent = '';
     try{
       if(signingUp){
+        const { data: existingEmail, error: usernameLookupError } =
+          await supabaseClient.rpc('get_login_email', { p_username: username });
+        if(usernameLookupError) throw usernameLookupError;
+        if(existingEmail){
+          message.textContent = 'Username is already taken.';
+          return;
+        }
+
         const { data, error } = await supabaseClient.auth.signUp({
           email: identity,
           password,
