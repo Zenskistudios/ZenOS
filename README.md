@@ -10,7 +10,7 @@ https://zen-os-inky.vercel.app/
 
 ## Features
 
-![Zen OS desktop](image.png)
+![Zen OS desktop](Readme/image.png)
 
 ### Desktop Environment
 
@@ -44,7 +44,7 @@ The desktop currently includes:
 
 ### Virtual filesystem
 
-![Zen OS file manager](image-1.png)
+![Zen OS file manager](Readme/image-1.png)
 
 The file manager provides a small filesystem stored in the browser. It supports:
 - Create folders
@@ -58,7 +58,7 @@ The file manager provides a small filesystem stored in the browser. It supports:
 
 ### Window management
 
-![Zen OS windows](image-2.png)
+![Zen OS windows](Readme/image-2.png)
 
 Users can:
 -  Open multiple applications
@@ -70,7 +70,7 @@ Users can:
 
 ### Settings
 
-![Zen OS settings](image-3.png)
+![Zen OS settings](Readme/image-3.png)
 
 Settings currently covers:
 - Display
@@ -87,18 +87,18 @@ Wi-Fi is simulated. Bluetooth uses the browser's Web Bluetooth device picker whe
 Task Manager shows the applications and processes currently running in the session.
 
 ### Software Hub
-![Zen OS Software Hub](image-4.png)
+![Zen OS Software Hub](Readme/image-4.png)
 
 Software Hub lets users install and remove the web applications and games listed in the catalog. Installation is simulated; some apps open real websites or embedded services.
 
 ### Games
-![Zen OS games](image-5.png)
+![Zen OS games](Readme/image-5.png)
 
 The Games section contains browser games that can be installed and launched from Zen OS. Current entries include Cross or Crash, Memory Game, Space Shooter, Flappy Bird, The Exit, You Are Not Alone, and Lagos Life.
 
 
 ### Web applications
-![Zen OS web applications](image-6.png)
+![Zen OS web applications](Readme/image-6.png)
 
 Some parts of Zen OS connect to real services.
 
