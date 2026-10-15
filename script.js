@@ -3181,7 +3181,7 @@ function renderBrowser(body, w){
 // just a restricted API key. Quota: search.list costs 100 units, videos.list
 // costs 1 unit, out of a 10,000/day free quota — so roughly ~99 real
 // searches/day before Google throttles it back until the next day.
-const YOUTUBE_API_KEY = 'AIzaSyBPQ_zBqOvxiwXYc0Ugrd9PTNMBY0Gpdgc';
+const YOUTUBE_API_KEY = 'AIzaSyDN7ygOFUWdA9WC2Z5r-eua5f2sh2PnnYY';
 const YOUTUBE_REGION = 'NG';
 
 // Loads the real YouTube IFrame Player API once. Using YT.Player (instead of
