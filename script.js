@@ -3968,7 +3968,6 @@ function renderSupabaseAuth(card, mode){
     submitButton.disabled = true;
     message.textContent = '';
     try{
-     try{
   if(signingUp){
     const { data, error } = await supabaseClient.auth.signUp({
       email: identity,
