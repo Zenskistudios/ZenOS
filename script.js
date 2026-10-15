@@ -4018,8 +4018,8 @@ function renderForgotPassword(card){
   card.innerHTML = `
     <div class="login-avatar">🔑</div>
     <div class="login-name">Reset your password</div>
-    <div class="login-sub">Enter your username or email address.</div>
-    <input class="login-input" id="reset-identity" type="text" placeholder="Username or email" autocomplete="username">
+    <div class="login-sub">Enter your email address.</div>
+    <input class="login-input" id="reset-identity" type="text" placeholder="Email" autocomplete="email">
     <button class="btn primary" id="reset-submit" style="width:100%; justify-content:center; margin-top:4px;">Send reset link</button>
     <button class="login-switch" id="reset-back">Back to sign in</button>
     <div class="login-error" id="reset-message" role="status"></div>
