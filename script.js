@@ -3177,12 +3177,7 @@ function renderBrowser(body, w){
 
 /* ---- YOUTUBE (PlayTube) — real YouTube thumbnails + real embedded player ---- */
 /* ---------------------- YOUTUBE DATA API (real search, real stats) ---------------------- */
-// Public data only (search, video stats, trending) — no user login needed,
-// just a restricted API key. Quota: search.list costs 100 units, videos.list
-// costs 1 unit, out of a 10,000/day free quota — so roughly ~99 real
-// searches/day before Google throttles it back until the next day.
-const YOUTUBE_API_KEY = 'AIzaSyDN7ygOFUWdA9WC2Z5r-eua5f2sh2PnnYY';
-const YOUTUBE_REGION = 'NG';
+// YouTube requests go through /api/youtube so the API key stays server-side.
 
 // Loads the real YouTube IFrame Player API once. Using YT.Player (instead of
 // a bare <iframe src=youtube.com/embed/...>) gives us a JS onError callback,
@@ -3238,16 +3233,23 @@ function ytMapVideoResource(v){
     views:v.statistics?v.statistics.viewCount:null, published:v.snippet.publishedAt, duration:v.contentDetails?v.contentDetails.duration:null,
   };
 }
+function ytMapApiVideo(v){
+  return {
+    id:v.id, title:v.title, channel:v.channel,
+    thumb:v.thumbnail || `https://img.youtube.com/vi/${v.id}/mqdefault.jpg`,
+    views:v.views, published:v.publishedAt, duration:v.duration
+  };
+}
 // Some videos have embedding disabled on third-party sites by the rights
 // holder (status.embeddable === false) — YouTube's own player shows a
 // "Video unavailable" screen for these inside our iframe. Requesting the
 // `status` part lets us filter those out before they ever reach the UI.
 async function youtubeVideosListByIds(ids){
   if(!ids.length) return [];
-  const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails,status&id=${ids.join(',')}&key=${YOUTUBE_API_KEY}`);
+  const res = await fetch(`/api/youtube?ids=${encodeURIComponent(ids.join(','))}`);
   const data = await res.json();
-  if(data.error) throw new Error(data.error.message);
-  return (data.items||[]).filter(v=>!v.status || v.status.embeddable !== false).map(ytMapVideoResource);
+  if(!res.ok || data.error) throw new Error(data.error || 'YouTube API request failed');
+  return (data.videos||[]).map(ytMapApiVideo);
 }
 function ytVideoCard(v){
   const thumb = v.thumb || `https://img.youtube.com/vi/${v.id}/mqdefault.jpg`;
@@ -3268,10 +3270,10 @@ async function youtubeFetchTrending(container, onSelect){
   if(!isOnline()){ container.innerHTML = `<div class="np-empty">📵 ${escapeHtml(offlineReason())}</div>`; return VIDEO_CATALOG; }
   container.innerHTML = `<div class="np-empty">Loading trending…</div>`;
   try{
-    const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails,status&chart=mostPopular&regionCode=${YOUTUBE_REGION}&maxResults=15&key=${YOUTUBE_API_KEY}`);
+    const res = await fetch('/api/youtube?trending=1');
     const data = await res.json();
-    if(data.error) throw new Error(data.error.message);
-    const list = (data.items||[]).filter(v=>!v.status || v.status.embeddable !== false).map(ytMapVideoResource);
+    if(!res.ok || data.error) throw new Error(data.error || 'YouTube API request failed');
+    const list = (data.videos||[]).map(ytMapApiVideo);
     if(!list.length){ container.innerHTML = `<div class="np-empty">No trending videos found</div>`; return VIDEO_CATALOG; }
     container.innerHTML = `<div class="grid-cards">${list.map(ytVideoCard).join('')}</div>`;
     ytBindCards(container, list, onSelect);
@@ -3287,12 +3289,11 @@ async function youtubeSearch(query, container, onSelect){
   if(!isOnline()){ container.innerHTML = `<div class="np-empty">📵 ${escapeHtml(offlineReason())}</div>`; return []; }
   container.innerHTML = `<div class="np-empty">Searching…</div>`;
   try{
-    const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=15&q=${encodeURIComponent(query)}&key=${YOUTUBE_API_KEY}`);
+    const res = await fetch(`/api/youtube?q=${encodeURIComponent(query)}`);
     const data = await res.json();
-    if(data.error) throw new Error(data.error.message);
-    const ids = (data.items||[]).map(i=>i.id.videoId).filter(Boolean);
-    if(!ids.length){ container.innerHTML = `<div class="np-empty">No results for "${escapeHtml(query)}"</div>`; return []; }
-    const list = await youtubeVideosListByIds(ids);
+    if(!res.ok || data.error) throw new Error(data.error || 'YouTube API request failed');
+    const list = (data.videos||[]).map(ytMapApiVideo);
+    if(!list.length){ container.innerHTML = `<div class="np-empty">No results for "${escapeHtml(query)}"</div>`; return []; }
     container.innerHTML = `<div class="grid-cards">${list.map(ytVideoCard).join('')}</div>`;
     ytBindCards(container, list, onSelect);
     return list;
