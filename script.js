@@ -3934,7 +3934,7 @@ function renderSupabaseAuth(card, mode){
     <div class="login-avatar">🌸</div>
     <div class="login-name">${signingUp ? 'Create your account' : 'Sign in to Zen OS'}</div>
     ${signingUp ? '<input class="login-input" id="cloud-username" placeholder="Username (3-20 characters)" maxlength="20" autocomplete="username">' : ''}
-    <input class="login-input" id="cloud-identity" type="${signingUp ? 'email' : 'text'}" placeholder="${signingUp ? 'Email address' : 'Username or email'}" autocomplete="${signingUp ? 'email' : 'username'}">
+    <input class="login-input" id="cloud-identity" type="${signingUp ? 'email' : 'text'}" placeholder="${signingUp ? 'Email address' : 'Email address'}" autocomplete="${signingUp ? 'email' : 'username'}">
     ${signingUp ? '<input class="login-input" id="cloud-name" placeholder="Display name" maxlength="40" autocomplete="name">' : ''}
     <input class="login-input" id="cloud-password" type="password" placeholder="Password" autocomplete="${signingUp ? 'new-password' : 'current-password'}">
     <button class="btn primary" id="cloud-submit" style="width:100%; justify-content:center; margin-top:4px;">${signingUp ? 'Create Account' : 'Sign In'}</button>
@@ -3968,14 +3968,7 @@ function renderSupabaseAuth(card, mode){
     submitButton.disabled = true;
     message.textContent = '';
     try{
-      if(signingUp){
-        const { data: existingEmail, error: usernameLookupError } =
-          await supabaseClient.rpc('get_login_email', { p_username: username });
-        if(usernameLookupError) throw usernameLookupError;
-        if(existingEmail){
-          message.textContent = 'Username is already taken.';
-          return;
-        }
+      const email = identity;
 
         const { data, error } = await supabaseClient.auth.signUp({
           email: identity,
@@ -3989,12 +3982,7 @@ function renderSupabaseAuth(card, mode){
           message.textContent = 'Check your email to confirm your account, then sign in.';
         }
       } else {
-        let email = identity;
-        if(!identity.includes('@')){
-          const { data: lookup, error: lookupError } = await supabaseClient.rpc('get_login_email', { p_username: identity });
-          if(lookupError || !lookup) throw new Error('Invalid username/email or password.');
-          email = lookup;
-        }
+        const email = identity;
         const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
         if(error) throw error;
         await startSupabaseSession(data.user, false);
@@ -4038,12 +4026,7 @@ function renderForgotPassword(card){
     submitButton.disabled = true;
     message.textContent = '';
     try{
-      let email = identity;
-      if(!identity.includes('@')){
-        const { data, error } = await supabaseClient.rpc('get_login_email', { p_username: identity });
-        if(error || !data) throw new Error('Unable to send reset link.');
-        email = data;
-      }
+      const email = identity;
       const { error } = await supabaseClient.auth.resetPasswordForEmail(email, { redirectTo: getAuthRedirectUrl() });
       if(error) throw error;
       message.textContent = 'If the account exists, a password reset link has been sent.';
