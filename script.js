@@ -3968,26 +3968,34 @@ function renderSupabaseAuth(card, mode){
     submitButton.disabled = true;
     message.textContent = '';
     try{
-      const email = identity;
+     try{
+  if(signingUp){
+    const { data, error } = await supabaseClient.auth.signUp({
+      email: identity,
+      password,
+      options: { data: { username, display_name: displayName } }
+    });
 
-        const { data, error } = await supabaseClient.auth.signUp({
-          email: identity,
-          password,
-          options: { data: { username, display_name: displayName } }
-        });
-        if(error) throw error;
-        if(data.session && data.user){
-          await startSupabaseSession(data.user, true);
-        } else {
-          message.textContent = 'Check your email to confirm your account, then sign in.';
-        }
-      } else {
-        const email = identity;
-        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-        if(error) throw error;
-        await startSupabaseSession(data.user, false);
-      }
-    }catch(error){
+    if(error) throw error;
+
+    if(data.session && data.user){
+      await startSupabaseSession(data.user, true);
+    } else {
+      message.textContent =
+        'Check your email to confirm your account, then sign in.';
+    }
+  } else {
+    const email = identity;
+    const { data, error } =
+      await supabaseClient.auth.signInWithPassword({
+        email,
+        password
+      });
+
+    if(error) throw error;
+    await startSupabaseSession(data.user, false);
+  }
+}catch(error){
       message.textContent = error.message || 'Authentication failed.';
     }finally{
       submitButton.disabled = false;
