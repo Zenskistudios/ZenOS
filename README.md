@@ -12,8 +12,6 @@ I wanted to see how far I could push the idea, so I started adding things you'd 
 ![Zen OS desktop](Readme/image2.png)
 ![Zen OS desktop](Readme/image3.png)
 
-
-
 ## What I've built so far
 
 Zen OS has a desktop with icons, wallpapers, a taskbar, a system tray, and a launcher. You can open multiple apps, move their windows around, minimize or maximize them, and switch between running apps.
