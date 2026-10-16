@@ -1,166 +1,66 @@
 # Zen OS
 
-Zen OS is a browser-based desktop environment built with HTML, CSS, and JavaScript. I’m building it to explore how much of a desktop operating system experience I can recreate inside a browser.
+Zen OS is a project I've been working on to recreate a desktop environment in the browser using HTML, CSS, and JavaScript.
 
-It is not meant to replace a real operating system. The project is mainly for experimenting with window management, browser APIs, local data, and small web applications.
+I wanted to see how far I could push the idea, so I started adding things you'd normally find on a desktop, like windows, a file manager, a terminal, settings, and other apps. It's still a work in progress, and I'm constantly finding things to fix or improve.
 
-## Live demo
+**Live demo:** https://zen-os-inky.vercel.app/
 
-https://zen-os-inky.vercel.app/
-
-## Features
-
+## Screenshots
 ![Zen OS desktop](Readme/image.png)
+![Zen OS desktop](Readme/image1.png)
+![Zen OS desktop](Readme/image2.png)
+![Zen OS desktop](Readme/image3.png)
 
-### Desktop Environment
 
-The desktop currently includes:
 
-- Desktop icons
-- Application launcher
-- Taskbar
-- System tray
-- Draggable application windows
-- Window controls
-- Custom cursor
-- Desktop context menu
-- Wallpapers
-  
-### Built-in applications
+## What I've built so far
+
+Zen OS has a desktop with icons, wallpapers, a taskbar, a system tray, and a launcher. You can open multiple apps, move their windows around, minimize or maximize them, and switch between running apps.
+
+Some of the apps I've built include:
 
 - File Manager
-- Text Editor
-- Notes
-- Calculator
-- Calendar
+- Text Editor and Notes
+- Calculator and Calendar
 - Terminal
-- Settings
-- Task Manager
+- Settings and Task Manager
 - Software Hub
 - Zen Browse
-- PlayTube (YouTube)
-- Wavelength (Spotify)
+- PlayTube
+- Wavelength
 - Share
 
-### Virtual filesystem
+The File Manager has its own virtual filesystem where you can create folders and files, edit them, rename them, and delete them. The Software Hub also has a collection of apps and games that can be launched from the desktop.
 
-![Zen OS file manager](Readme/image-1.png)
+I've added a few games too, including Cross or Crash, Memory Game, Space Shooter, Flappy Bird, The Exit, You Are Not Alone, and Lagos Life.
 
-The file manager provides a small filesystem stored in the browser. It supports:
-- Create folders
-- Create text files
-- Open files
-- Edit files
-- Rename files
-- Delete files
-- Navigate between folders
+## Browser apps and other features
 
+Zen Browse lets you open websites inside Zen OS, although some sites don't work properly in an embedded browser.
 
-### Window management
+PlayTube uses YouTube embeds, while Wavelength uses Spotify embeds. The Share app uses WebRTC to transfer files directly between browsers, with Supabase Realtime helping them establish a connection. Bluetooth support depends on the browser and device.
 
-![Zen OS windows](Readme/image-2.png)
+## Saving data and accounts
 
-Users can:
--  Open multiple applications
--  Move windows around
--  Minimize windows
--  Maximize windows
--  Close windows
-- Switch between running applications
+Zen OS saves data in the browser, so it can work without a backend. I've also been working on Supabase integration to support accounts and syncing data between devices.
 
-### Settings
+Users can back up and restore their profiles through Settings → Storage → Backup. Cloud syncing is still being worked on, and simultaneous changes from multiple devices can overwrite each other.
 
-![Zen OS settings](Readme/image-3.png)
+To enable the cloud features, you'll need a Supabase project. The SQL setup is in `supabase/schema.sql`, and the project URL and public anon key go in `supabase-config.js`. You'll also need to configure the allowed URLs in Supabase Authentication.
 
-Settings currently covers:
-- Display
-- Sound
-- Notifications
-- Network
-- Privacy
-- Storage
-
-Wi-Fi is simulated. Bluetooth uses the browser's Web Bluetooth device picker when supported. The Share app uses an encrypted WebRTC connection to transfer photos, documents, videos, and other files directly between two browsers.
-
-### Task manager
-
-Task Manager shows the applications and processes currently running in the session.
-
-### Software Hub
-![Zen OS Software Hub](Readme/image-4.png)
-
-Software Hub lets users install and remove the web applications and games listed in the catalog. Installation is simulated; some apps open real websites or embedded services.
-
-### Games
-![Zen OS games](Readme/image-5.png)
-
-The Games section contains browser games that can be installed and launched from Zen OS. Current entries include Cross or Crash, Memory Game, Space Shooter, Flappy Bird, The Exit, You Are Not Alone, and Lagos Life.
-
-
-### Web applications
-![Zen OS web applications](Readme/image-6.png)
-
-Some parts of Zen OS connect to real services.
-
-**PlayTube** uses YouTube embeds for playing videos.
-
-**Wavelength** uses Spotify embeds for music.
-
-**Zen Browse** can load websites inside the desktop environment.
-
-Because of browser security restrictions, some websites may not work correctly when loaded inside Zen Browse.
-
-## Storage and accounts
-
-Zen OS automatically saves changed state locally and also saves when the page is hidden or closed. When Supabase is configured, the signed-in user's state is synced to the cloud in the background. Without Supabase, the app works as a local-only application.
-
-The local copy can be removed if browser storage is cleared. Cloud sync currently stores the user's state as one JSON document, so simultaneous edits on two devices use the most recent save.
-
-### Supabase setup
-
-Step 1. I create a Supabase project and open the SQL Editor.
-Step 2. Then run `supabase/schema.sql`.
-Step 3. I put the project URL and public anon key in `supabase-config.js`.
-Step 4. After i added the deployed site and local development URL under Supabase Authentication → URL Configuration.
-Step 5. Then run Zen OS over HTTPS or localhost. Password recovery does not work reliably from a `file://` URL.
-
-The SQL i created creates the `user_state` table, row-level security policies, username reservations, username login support, and password recovery support. Usernames are case-insensitive and stay unavailable while their account exists. Deleting the original account releases the username. Supabase Realtime is used only to exchange WebRTC connection details; the transferred files do not pass through Supabase.
-
-My app never uses a Supabase service-role key in the browser. When an older local profile matches the username of a new Supabase account, Zen OS offers to import it during the first sign-in. Users can also download or restore a profile from **Settings → Storage → Backup**. Backups are JSON files and can be kept before changing storage providers or clearing browser data.
+Zen OS doesn't use a service-role key in the browser.
 
 ## Built with
 
-- HTML
-- CSS
-- JavaScript
-- SVG
-- Browser APIs
-- Local Storage and IndexedDB
-- Supabase Auth and PostgreSQL (optional)
+HTML, CSS, JavaScript, SVG, browser APIs, Local Storage, IndexedDB, and Supabase.
 
-## Status
+## What's next?
 
-Zen OS is still under active development. I’m currently working on making window management, local and cloud storage, sign-in, and the built-in apps more reliable.
+I'm still working on Zen OS, mainly trying to make the existing features more reliable. There's more work to do on the browser, storage, accounts, and file management.
 
-## Possible future work
-
-- Planning on adding more built-in applications and games
-- Creating a better file management
-- More desktop customization
-- More browser and media features
-- Improved hardware support where browser APIs allow it
-- Optional encrypted backups and better conflict handling
-- Bringing ai assitance called Owl
-
-## Work done today
-Today i firstly rearrange the image in the readme into a folder so it could be well arrange, fixed the bug in the script.js file that was causing the application to crash when a user inputted invalid data. The issue was related to improper error handling, which has now been addressed by adding validation checks and appropriate error messages
-
-Then i connected the Supabase email confirmation flow to Brevo SMTP and verified the sender email. I also fixed an SMTP error caused by Brevo blocking Supabase's server IP addresses.
-
-I updated the signup form so it clearly asks for an email address. I checked the signup logs while testing and confirmed that the problem was with email delivery, not the signup form itself.
-
-I also worked on the security side of the app by tightening profile imports, fixing the missing-user admin check, improving storage error handling, and reducing permissions on the Zen Browse iframes. Cloud accounts now use the standard role by default instead of allowing public users to choose administrator access.
+I also want to add more apps and games, improve desktop customization, and eventually build **Owl**, an AI assistant for Zen OS.
 
 ## Author
 
-**Taiwo Jegede**
+Taiwo Jegede
