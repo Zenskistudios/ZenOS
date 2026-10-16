@@ -284,10 +284,10 @@ const GAME_CATALOG = [
   {id:'gm-crossorcrash', name:'Cross or Crash', cat:'Arcade', icon:'🚦', color:'#7c6cff', size:'11 MB', rating:4.4, desc:'A quick-reflex arcade game about crossing safely without crashing.', url:'https://khushnaseiba.github.io/crossorcrash/'},
   {id:'gm-memorygame', name:'Memory Game', cat:'Puzzle', icon:'🧠', color:'#2fe6c9', size:'6 MB', rating:4.5, desc:'A classic card-flipping memory match game — find every pair.', url:'https://hrishikesh599.github.io/memory-game/'},
   {id:'gm-spaceshooter', name:'Space Shooter', cat:'Arcade', icon:'🚀', color:'#ff8f5c', size:'14 MB', rating:4.3, desc:'A retro-style arcade space shooter — blast through waves of enemies.', url:'https://pateldhrupad011-sketch.github.io/Space-Shooter/'},
-  {id:'gm-notalone', name:'You Are Not Alone', cat:'Adventure', icon:'🌙', color:'#9b8cff', size:'9 MB', rating:4.2, desc:'A short, atmospheric browser adventure to play through in one sitting.', url:'http://khushnaseiba.github.io/You_are_not_alone/'},
+  {id:'gm-notalone', name:'You Are Not Alone', cat:'Adventure', icon:'🌙', color:'#9b8cff', size:'9 MB', rating:4.2, desc:'A short, atmospheric browser adventure to play through in one sitting.', url:'https://khushnaseiba.github.io/You_are_not_alone/'},
   {id:'gm-flappybird', name:'Flappy Bird', cat:'Arcade', icon:'🐦', color:'#ffd166', size:'4 MB', rating:4.1, desc:'A Flappy Bird–style tap-to-fly arcade game — see how far you can go.', url:'https://flappyyyy-birdd.netlify.app/'},
   {id:'gm-theexit', name:'The Exit', cat:'Puzzle', icon:'🚪', color:'#4ade80', size:'8 MB', rating:4.3, desc:'A short escape-the-room style puzzle game — find your way to the exit.', url:'https://khushnaseiba.github.io/The_Exit/'},
-  {id:'gm-lagoslife', name:'Lagos Life', cat:'Simulation', icon:'🌆', color:'#ff9f5c', size:'12 MB', rating:4.4, desc:'Explore a lively Lagos-inspired browser game and experience city life.', url:'https://lagoslife.eliysites.com/'},
+  {id:'gm-lagoslife', name:'Lagos Life', cat:'Simulation', icon:'🌆', color:'#ff9f5c', size:'12 MB', rating:4.4, desc:'Explore a lively Lagos-inspired browser game and experience city life.', url:'https://lagoslife.app/'},
 ];
 
 // Real, publicly embeddable YouTube videos (official/Creative-Commons sources).
@@ -1896,7 +1896,12 @@ function renderWebApp(body, w, sw){
       if(retry) retry.addEventListener('click', ()=>{ inst.blocked=false; drawFrame(); });
       return;
     }
-    host.innerHTML = `<iframe src="${escapeHtml(sw.url)}" style="width:100%; height:100%; border:0; display:block; flex:1;" referrerpolicy="no-referrer" sandbox="allow-scripts allow-forms allow-popups allow-downloads"></iframe>`;
+    // allow-same-origin only gives the *third-party* page its own origin (localStorage, cookies, IndexedDB,
+    // WebSockets with credentials). It can't touch Zen OS because the origins differ. Without it, login/save
+    // based games such as Lagos Life crash on their first storage call.
+    host.style.flexDirection = 'column';
+    host.innerHTML = `<iframe src="${escapeHtml(sw.url)}" style="width:100%; flex:1; min-height:0; border:0; display:block;" referrerpolicy="strict-origin-when-cross-origin" allow="fullscreen; autoplay; clipboard-write; gamepad; accelerometer; gyroscope" allowfullscreen sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-pointer-lock allow-downloads allow-orientation-lock"></iframe>
+      <div style="flex:none; display:flex; align-items:center; justify-content:center; gap:8px; padding:4px 8px; font-size:10.5px; color:var(--text-3); background:var(--panel);">Blank or stuck? Some sites refuse to run inside another page. <a href="${escapeHtml(sw.url)}" target="_blank" rel="noopener" style="color:var(--text-2); text-decoration:underline;">Open ${escapeHtml(sw.name)} in a new tab ↗</a></div>`;
     const frame = host.querySelector('iframe');
     frame.addEventListener('error', ()=>{ inst.blocked = true; drawFrame(); });
   }
@@ -2951,9 +2956,11 @@ function renderTaskManager(body, w){
 }
 
 /* ---- BROWSER (real, live web via iframe navigation) ---- */
+const ZB_START = 'zen://start';
 function normalizeUrl(raw){
   raw = (raw||'').trim();
   if(!raw) return '';
+  if(raw === ZB_START) return ZB_START;
   if(/^https?:\/\//i.test(raw)){
     try{
       const url = new URL(raw);
@@ -2965,10 +2972,25 @@ function normalizeUrl(raw){
     return 'https://' + raw;
   }
   // otherwise treat as a search query
-  return 'https://duckduckgo.com/html/?q=' + encodeURIComponent(raw);
+  // Wikipedia allows being framed; DuckDuckGo/Google/Bing refuse (X-Frame-Options) and showed a blank page.
+  return 'https://en.wikipedia.org/w/index.php?search=' + encodeURIComponent(raw);
 }
-const ZB_HOME = 'https://duckduckgo.com/html/';
-function zbNewTabState(url){ const u = url||ZB_HOME; return {id:uid('tab'), url:u, input:u, history:[u], hi:0, blocked:false, loading:true, zoom:100}; }
+const ZB_HOME = ZB_START;
+const ZB_START_HTML = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>New Tab</title>
+<style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;background:#0f1220;color:#e8ecf8;font:14px system-ui,sans-serif;padding:24px}
+h1{margin:0;font-size:26px;letter-spacing:.5px}form{display:flex;gap:8px;width:min(560px,100%)}input{flex:1;padding:12px 14px;border:1px solid #2c3350;background:#171b2e;color:inherit;font-size:14px;outline:none}
+input:focus{border-color:#2fe6c9}button{padding:12px 16px;border:0;background:#2fe6c9;color:#06221d;font-weight:700;cursor:pointer}button.alt{background:#232945;color:#e8ecf8}
+.tiles{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;max-width:560px}.tiles a{padding:9px 14px;background:#171b2e;border:1px solid #2c3350;color:#cfd6f3;text-decoration:none;font-size:12.5px;cursor:pointer}.tiles a:hover{border-color:#2fe6c9}
+p{margin:0;color:#8a93b5;font-size:11.5px;max-width:520px;text-align:center;line-height:1.5}</style>
+<h1>🧭 Zen Browse</h1>
+<form id="f"><input id="q" placeholder="Search Wikipedia or type a URL" autofocus><button>Go</button><button type="button" class="alt" id="web" title="Open a full web search in a real browser tab">Web ↗</button></form>
+<div class="tiles"><a data-u="https://en.wikipedia.org/">Wikipedia</a><a data-u="https://developer.mozilla.org/">MDN</a><a data-u="https://example.com/">Example.com</a><a data-u="https://www.wikihow.com/">wikiHow</a><a data-u="https://archive.org/">Internet Archive</a></div>
+<p>Many big sites (Google, DuckDuckGo, YouTube, social networks) forbid being shown inside another page. For those use <b>Web ↗</b> or the ⋮ menu's “Open in real new tab”.</p>
+<script>const q=document.getElementById('q');const send=m=>parent.postMessage(Object.assign({zenBrowse:1},m),'*');
+document.getElementById('f').addEventListener('submit',e=>{e.preventDefault();if(q.value.trim())send({go:q.value.trim()})});
+document.getElementById('web').addEventListener('click',()=>{if(q.value.trim())send({web:q.value.trim()})});
+document.querySelectorAll('[data-u]').forEach(a=>a.addEventListener('click',()=>send({go:a.dataset.u})));<\/script>`;
+function zbNewTabState(url){ const u = url||ZB_HOME; return {id:uid('tab'), url:u, input:u===ZB_START?'':u, history:[u], hi:0, blocked:false, loading:true, zoom:100}; }
 function renderBrowser(body, w){
   const inst = winInstances[w.id];
   inst.tabs = inst.tabs && inst.tabs.length ? inst.tabs : [zbNewTabState(w.data && w.data.url)];
@@ -2990,6 +3012,10 @@ function renderBrowser(body, w){
   function faviconFor(url){ const h=hostnameOf(url); return h?`https://www.google.com/s2/favicons?domain=${h}&sz=32`:''; }
   function isBookmarked(url){ return state.browserBookmarks.some(b=>b.url===url); }
 
+  function loadFrame(tab, el){
+    if(tab.url === ZB_START){ el.removeAttribute('src'); el.srcdoc = ZB_START_HTML; }
+    else { el.removeAttribute('srcdoc'); el.src = tab.url; }
+  }
   function ensureFrame(tab){
     let el = frames[tab.id];
     if(!el){
@@ -3000,7 +3026,7 @@ function renderBrowser(body, w){
       // Keep browsing usable, but leave out allow-same-origin and
       // allow-popups-to-escape-sandbox for untrusted third-party pages.
       el.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups');
-      el.src = tab.url;
+      loadFrame(tab, el);
       // Note on detection: browsers don't fire a script-visible signal when a
       // cross-origin site's X-Frame-Options/CSP refuses to render inside a frame
       // (that silence is itself the security boundary). 'load' still fires for
@@ -3008,7 +3034,7 @@ function renderBrowser(body, w){
       // fire 'error' and show the blocked banner; silent X-Frame-Options
       // refusals show as a blank frame, which is why the menu always offers
       // "Open in real new tab" as an escape hatch.
-      el.addEventListener('load', ()=>{ tab.loading=false; if(activeTab()===tab) syncLoadbar(); });
+      el.addEventListener('load', ()=>{ if(el.getAttribute('src')==='about:blank') return; tab.loading=false; if(activeTab()===tab) syncLoadbar(); });
       el.addEventListener('error', ()=>{ tab.loading=false; tab.blocked=true; if(activeTab()===tab) drawChrome(); });
       frameHost.appendChild(el);
       frames[tab.id] = el;
@@ -3034,23 +3060,23 @@ function renderBrowser(body, w){
     if(!isOnline()){ tab.input = rawInput; tab.offline = true; tab.loading = false; drawChrome(); return; }
     tab.input = rawInput; tab.url = url; tab.blocked = false; tab.offline = false; tab.loading = true;
     tab.history = tab.history.slice(0, tab.hi+1); tab.history.push(url); tab.hi++;
-    state.browserHistory.push(url); saveState();
-    ensureFrame(tab).src = url;
+    if(url !== ZB_START){ state.browserHistory.push(url); saveState(); }
+    loadFrame(tab, ensureFrame(tab));
     drawChrome();
   }
   function goHistory(dir){
     const tab = activeTab(); const ni = tab.hi + dir;
     if(ni<0 || ni>=tab.history.length) return;
-    tab.hi = ni; tab.url = tab.history[ni]; tab.input = tab.url; tab.blocked=false; tab.loading=true;
-    ensureFrame(tab).src = tab.url;
+    tab.hi = ni; tab.url = tab.history[ni]; tab.input = tab.url===ZB_START?'':tab.url; tab.blocked=false; tab.loading=true;
+    loadFrame(tab, ensureFrame(tab));
     drawChrome();
   }
   function reloadOrStop(){
     const tab = activeTab(); const frame = ensureFrame(tab);
     if(tab.loading){ frame.src = 'about:blank'; tab.loading=false; drawChrome(); return; }
     tab.loading = true; drawChrome();
-    frame.src = 'about:blank';
-    setTimeout(()=>{ frame.src = tab.url; }, 10);
+    frame.removeAttribute('srcdoc'); frame.src = 'about:blank';
+    setTimeout(()=>{ loadFrame(tab, frame); }, 10);
   }
   function addTab(url){
     const t = zbNewTabState(url);
@@ -3069,6 +3095,7 @@ function renderBrowser(body, w){
   function switchTab(i){ inst.active=i; showActiveFrame(); drawChrome(); }
   function toggleBookmark(){
     const tab = activeTab();
+    if(tab.url===ZB_START) return;
     const idx = state.browserBookmarks.findIndex(b=>b.url===tab.url);
     if(idx>=0){ state.browserBookmarks.splice(idx,1); notify('Bookmark removed', tab.url, '☆', '#a99fd6'); }
     else{ state.browserBookmarks.push({title:hostnameOf(tab.url)||tab.url, url:tab.url}); notify('Bookmark added', tab.url, '⭐', '#ffb35c'); }
@@ -3084,12 +3111,12 @@ function renderBrowser(body, w){
 
   function drawChrome(){
     const tab = activeTab();
-    const lock = /^https:/i.test(tab.url) ? '🔒' : /duckduckgo\.com\/html/i.test(tab.url) ? '🔍' : '⚠️';
+    const lock = tab.url===ZB_START ? '🔍' : /^https:/i.test(tab.url) ? '🔒' : '⚠️';
     chromeEl.innerHTML = `
       <div class="zb-tabs">
-        ${inst.tabs.map((t,i)=>`<div class="zb-tab ${i===inst.active?'active':''}" data-tab="${i}" title="${escapeHtml(t.input||t.url)}">
+        ${inst.tabs.map((t,i)=>`<div class="zb-tab ${i===inst.active?'active':''}" data-tab="${i}" title="${escapeHtml(t.url===ZB_START?'New Tab':(t.input||t.url))}">
           ${faviconFor(t.url)?`<img class="fav" src="${faviconFor(t.url)}" onerror="this.style.display='none'">`:'<span class="fav" style="font-size:11px;">🌐</span>'}
-          <span class="lbl">${escapeHtml((t.input||t.url).replace(/^https?:\/\//,'').slice(0,24)||'New Tab')}</span>
+          <span class="lbl">${escapeHtml(t.url===ZB_START?'New Tab':((t.input||t.url).replace(/^https?:\/\//,'').slice(0,24)||'New Tab'))}</span>
           ${inst.tabs.length>1?`<span class="zb-close" data-close-tab="${i}">×</span>`:''}
         </div>`).join('')}
         <button class="zb-newtab" id="br-newtab" title="New tab">+</button>
@@ -3101,7 +3128,7 @@ function renderBrowser(body, w){
         <button class="zb-navbtn" id="br-home" title="Home">⌂</button>
         <div class="zb-address-wrap">
           <span class="lock">${lock}</span>
-          <input id="br-address" value="${escapeHtml(tab.input||tab.url)}" placeholder="Search the web or enter a URL">
+          <input id="br-address" value="${escapeHtml(tab.url===ZB_START?(tab.input||''):(tab.input||tab.url))}" placeholder="Search the web or enter a URL">
         </div>
         <button class="zb-navbtn zb-star ${isBookmarked(tab.url)?'on':''}" id="br-bookmark" title="Bookmark this page">${isBookmarked(tab.url)?'★':'☆'}</button>
         <button class="zb-navbtn" id="br-menu" title="Menu">⋮</button>
@@ -3135,7 +3162,7 @@ function renderBrowser(body, w){
     const addressInput = chromeEl.querySelector('#br-address');
     addressInput.addEventListener('keydown', e=>{
       if(e.key==='Enter') navigate(e.target.value.trim());
-      else if(e.key==='Escape'){ e.target.value = activeTab().input||activeTab().url; e.target.blur(); }
+      else if(e.key==='Escape'){ e.target.value = activeTab().url===ZB_START?'':(activeTab().input||activeTab().url); e.target.blur(); }
     });
     addressInput.addEventListener('focus', e=>e.target.select());
     chromeEl.querySelector('#br-back').addEventListener('click', ()=>goHistory(-1));
@@ -3150,7 +3177,7 @@ function renderBrowser(body, w){
       e.stopPropagation();
       const m = el.dataset.m;
       if(m==='newtab') addTab();
-      else if(m==='newwin') window.open(activeTab().url, '_blank', 'noopener');
+      else if(m==='newwin'){ if(activeTab().url!==ZB_START) window.open(activeTab().url, '_blank', 'noopener'); }
       else if(m==='zoomin') setZoom(10);
       else if(m==='zoomout') setZoom(-10);
       else if(m==='zoomreset') setZoom(0, true);
@@ -3162,13 +3189,25 @@ function renderBrowser(body, w){
     menuDd.querySelectorAll('[data-hurl]').forEach(el=>el.addEventListener('click', ()=>{ menuOpen=false; navigate(el.dataset.hurl); }));
     chromeEl.querySelectorAll('.zb-bookmarks-bar [data-bm]').forEach(el=>el.addEventListener('click', ()=>navigate(el.dataset.bm)));
   }
-  document.addEventListener('click', e=>{
+  const onStartMessage = e=>{
+    if(!frameHost.isConnected){ window.removeEventListener('message', onStartMessage); return; }
+    const d = e.data; if(!d || !d.zenBrowse) return;
+    const tab = inst.tabs.find(t=>frames[t.id] && frames[t.id].contentWindow===e.source);
+    if(!tab || tab.url!==ZB_START) return;           // only the built-in start page may drive the browser
+    if(inst.tabs[inst.active]!==tab) inst.active = inst.tabs.indexOf(tab);
+    if(typeof d.go==='string') navigate(d.go.slice(0,2000));
+    else if(typeof d.web==='string'){ window.open('https://duckduckgo.com/?q='+encodeURIComponent(d.web.slice(0,500)), '_blank', 'noopener'); }
+  };
+  window.addEventListener('message', onStartMessage);
+  const onDocClick = e=>{
+    if(!frameHost.isConnected){ document.removeEventListener('click', onDocClick); return; }
     if(!menuOpen) return;
     if(e.target.closest('#br-menu-dd') || e.target.closest('#br-menu')) return;
     menuOpen = false;
     const dd = chromeEl.querySelector('#br-menu-dd');
     if(dd) dd.classList.remove('open');
-  });
+  };
+  document.addEventListener('click', onDocClick);
 
   ensureFrame(activeTab());
   showActiveFrame();
@@ -3373,9 +3412,9 @@ function renderYoutube(body, w){
       const host = body.querySelector('#yt-player-host');
       if(!host) return; // user already navigated away
       new YT.Player(host, {
-        videoId, playerVars:{autoplay:1, rel:0},
+        videoId, playerVars:Object.assign({autoplay:1, rel:0, playsinline:1}, /^https?:$/.test(location.protocol)?{origin:location.origin}:{}),
         events:{ onError:(event)=>{
-          const messages = {2:'That video link looks invalid.', 5:"This video can't be played in this browser.", 100:'This video was removed or made private.', 101:'The video owner disabled playback on outside apps like PlayTube.', 150:'The video owner disabled playback on outside apps like PlayTube.'};
+          const messages = {2:'That video link looks invalid.', 5:"This video can't be played in this browser.", 100:'This video was removed or made private.', 101:'The video owner disabled playback on outside apps like PlayTube.', 150:'The video owner disabled playback on outside apps like PlayTube.', 153:'YouTube could not verify this site (missing referrer). Open Zen OS from its https address, not a file.'};
           showUnplayable(messages[event.data]);
         } }
       });
